@@ -1,0 +1,41 @@
+---
+title: "Week 00 — Repository and shell setup"
+author: "<your name>"
+date: today
+---
+
+## 1. This week's analysis
+
+I created this repository from the course project template, cloned it to `~/GitHub/` on my laptop, and personalized the README. The recursive file listing below was produced with:
+
+```bash
+mkdir -p output/week00
+find . -path ./.git -prune -o -type f -print | sort > output/week00/file-list.txt
+head output/week00/file-list.txt
+```
+
+First ten lines of `output/week00/file-list.txt`:
+
+```text
+<paste the output of head here>
+```
+
+Platform: my own computer (macOS / Windows / Linux: ___). Git version: ___.
+
+## 2. Reflection questions
+
+1. Which tasks belong on my own computer, which on Raven, and which on Hyak? 
+2. One workflow habit I want to make automatic this quarter: 
+
+## 3. Project progress
+
+Draft project idea (one or two sentences): 
+
+## 4. Where I'm stuck
+
+None / ___
+
+## 5. Next week
+
+- Refine the Project Proposal issue.
+- Week 01 analysis: BLAST.

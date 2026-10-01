@@ -1,0 +1,16 @@
+# Raw data are never committed. Record source and checksums in data/README.md.
+data/raw/*
+!data/raw/.gitkeep
+
+# Quarto / R
+/.quarto/
+*_files/
+*_cache/
+.Rproj.user/
+.Rhistory
+.RData
+*.quarto_ipynb
+
+# OS
+.DS_Store
+Thumbs.db
