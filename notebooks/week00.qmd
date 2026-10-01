@@ -1,6 +1,6 @@
 ---
 title: "Week 00 — Repository and shell setup"
-author: "<your name>"
+author: "Steven Roberts"
 date: today
 ---
 

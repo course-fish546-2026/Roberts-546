@@ -1,8 +1,8 @@
-# <Your name> · FISH 546 project
+# Steven Roberts · FISH 546 project
 
-> Replace this block. One paragraph: what question you are asking, what data you are using, and what the final figure will show. It will change over the quarter; that is fine.
+eDNA of yellow Island
 
-**Course:** FISH 546, Bioinformatics for Environmental Sciences, Autumn 2026 · [course site](https://sr320.github.io/course-fish546-2026/) · [my Project Proposal issue](https://github.com/sr320/course-fish546-2026/issues/<number>)
+**Course:** FISH 546, Bioinformatics for Environmental Sciences, Autumn 2026 · [course site](https://sr320.github.io/course-fish546-2026/) · [my Project Proposal issue](https://github.com/sr320/course-fish546-2026/issues/%3Cnumber%3E)
 
 ## Endpoint
 
@@ -11,7 +11,7 @@ By Week 10 I will have: <one sentence>.
 ## Repository map
 
 | Path | What |
-|---|---|
+|------------------------------------|------------------------------------|
 | `code/` | Scripts and functions that turn data into output |
 | `data/raw/` | Raw inputs. **Never committed.** Source and checksums recorded in `data/README.md` |
 | `data/processed/` | Small derived tables that are safe to commit |
@@ -22,8 +22,8 @@ By Week 10 I will have: <one sentence>.
 
 ## Reproducing
 
-<Fill in at the end: platforms used, software and container versions, how to rerun the final figure from raw input.>
+\<Fill in at the end: platforms used, software and container versions, how to rerun the final figure from raw input.\>
 
 ## Data availability
 
-<Where the raw data live, how they were named, and where the checksums are.>
+\<Where the raw data live, how they were named, and where the checksums are.\>
