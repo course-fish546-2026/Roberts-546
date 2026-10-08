@@ -5,4 +5,69 @@ editor: visual
 
 I need to get my data to raven
 
+http://owl.fish.washington.edu/nightingales/S_namaycush/filtered_LTL_PL59_TGACCA_L005_R1.fastq.gz
+
+```{bash}
+cd ../data/raw
+curl -O http://owl.fish.washington.edu/nightingales/S_namaycush/filtered_LTL_PL59_TGACCA_L005_R1.fastq.gz
+```
+```{bash}
+curl -h
+```
+
+Ehtis is me unziping a file its big\
+\
+
+```{bash}
+gunzip ../data/raw/filtered_LTL_PL59_TGACCA_L005_R1.fastq.gz
+```
+
+```{bash}
+head ../data/raw/filtered_LTL_PL59_TGACCA_L005_R1.fastq
+```
+
+```{bash}
+curl -I -L "https://cloudfiles.labmed.uw.edu/file/dlmp-research/labs/salipante/transfer/Laidre/260810_PolarBear.tar"
+```
+
+
+
+```{bash}
+cd ../data/raw
+curl -L -C - -O "https://cloudfiles.labmed.uw.edu/file/dlmp-research/labs/salipante/transfer/Laidre/260810_PolarBear.tar"
+```
+
+```{bash}
+head ../data/raw/260810_PolarBear.tar
+```
+
+
+
+```{bash}
+pwd
+```
+
+# Fast QC
+
+
+```{bash}
+/home/shared/FastQC-0.12.1/fastqc ../data/raw/filtered_LTL_PL59_TGACCA_L005_R1.fastq
+```
+
+# Fastqc
+
+
+```{bash}
+
+```
+
+```{bash}
+/home/shared/ncbi-blast-2.15.0+/bin/blastx -h
+```
+
+
+```{bash}
+/home/shared/FastQC-0.12.1/fastqc ../data/raw/filtered_LTL_PL59_TGACCA_L005_R1.fastq
+```
+
 
