@@ -1,5 +1,4 @@
-
-=======
+---
 title: "Week 01 — <topic>"
 author: "Steven Roberts"
 date: today
