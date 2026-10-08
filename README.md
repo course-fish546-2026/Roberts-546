@@ -2,7 +2,7 @@
 
 eDNA of yellow Island -  this is a lot of data.. 
 
-**Course:** FISH 546, Bioinformatics for Environmental Sciences, Autumn 2026 · [course site](https://sr320.github.io/course-fish546-2026/) · [my Project Proposal issue](https://github.com/sr320/course-fish546-2026/issues/%3Cnumber%3E)
+**Course:** FISH 546, Bioinformatics for Environmental Sciences, Autumn 2026 · [course site](https://sr320.github.io/course-fish546-2026/) · [my Project Proposal issue](https://github.com/sr320/course-fish546-2026/issues/24)
 
 ## Endpoint
 
