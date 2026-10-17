@@ -54,7 +54,7 @@ cat *.md5 | md5sum -c --quiet
 
 ## 2. Import the reads into QIIME 2
 
-QIIME 2 needs a **manifest**: a table listing each sample and where its two read files (R1 and R2) are. This loop writes one row per sample. It skips samples whose files are empty or that are missing R2 (`Site5t_S125`), since QIIME 2 can't import those.
+QIIME 2 needs a **manifest**: a table listing each sample and where its two read files (R1 and R2) are. This loop writes one row per sample. It skips samples whose files are empty or that are missing R2 (`Site5t_S125`), since QIIME 2 can't import those. It also skips two samples with almost no reads: `Site5J_S107` (70 read pairs) and `Site5w_S128` (13 read pairs). Samples this small give too few reads after filtering to say anything about the community.
 
 It also writes a **sample metadata** file, which records information about each sample. Here that is just the site (`Site1` or `Site5`), taken from the sample name. You can add more columns later (date, depth, replicate, ...).
 
@@ -76,6 +76,12 @@ for r1 in ${raw}/*_R1_001.fastq.gz; do
   # skip samples with no R2 file or no reads
   if [ ! -f "$r2" ] || [ -z "$(zcat "$r1" | head -c 1)" ]; then
     echo "Skipping $sample"
+    continue
+  fi
+
+  # skip samples with too few reads to use
+  if [ "$sample" = "Site5J_S107" ] || [ "$sample" = "Site5w_S128" ]; then
+    echo "Skipping $sample (too few reads)"
     continue
   fi
 
