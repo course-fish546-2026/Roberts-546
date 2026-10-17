@@ -1,6 +1,8 @@
 ---
 title: "03.1-eDNA: a simple eDNA metabarcoding workflow"
 editor: visual
+execute:
+  eval: false
 ---
 
 ## What this page does
