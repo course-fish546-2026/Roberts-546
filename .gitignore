@@ -27,3 +27,4 @@ data/trimmed-qc/**/*.fastq.gz
 # Stray R graphics device output
 Rplots.pdf
 data/qiime2/**/demux.qza
+data/qiime2/reference/

@@ -328,3 +328,54 @@ for marker in V9 COI; do
     --o-visualization ${outdir}/${marker}/rep-seqs.qzv
 done
 ```
+
+## Assign taxonomy
+
+The next chunks build a reference classifier for each marker and use it to assign a taxonomy to every ASV. A classifier is trained on reference sequences of known taxonomy. QIIME 2's naive Bayes classifier learns which short DNA "words" (k-mers) go with which taxa, then uses them to predict the taxonomy of each ASV, with a confidence score.
+
+The classifier is trained only on the part of each reference sequence between our PCR primers, the same region our ASVs cover. This is more accurate than training on full-length reference sequences.
+
+| Marker | Reference database | Why |
+|----|----|----|
+| 18S V9 | PR2 version 5.1.1 | Curated 18S database focused on protists and other eukaryotes |
+| COI | MIDORI2 GB273, CO1 "uniq" | Curated mitochondrial sequences from GenBank, with every unique sequence kept for each species |
+
+Reference files and classifiers go to `../data/qiime2/reference`, separate from the sample data, since they can be reused for other projects.
+
+### Build the 18S V9 classifier (PR2)
+
+This chunk:
+
+1.  Downloads PR2 with RESCRIPt (`qiime rescript get-pr2-data`). This gives about 240,000 reference sequences and their taxonomy
+2.  Cuts out the V9 region with `qiime feature-classifier extract-reads`, using the same primers as cutadapt. Only sequences where both primers are found are kept (about 40,000, since many PR2 sequences don't reach the V9 region at the end of the 18S gene). `--p-min-length 60` and `--p-max-length 250` drop extracted pieces that are much shorter or longer than a real V9 amplicon
+3.  Trains the classifier with `qiime feature-classifier fit-classifier-naive-bayes`
+
+On this server, the whole chunk takes about 6 minutes and needs about 7 GB of memory.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+refdir=../data/qiime2/reference
+mkdir -p ${refdir}
+
+qiime rescript get-pr2-data \
+  --p-version 5.1.1 \
+  --o-pr2-sequences ${refdir}/pr2-seqs.qza \
+  --o-pr2-taxonomy ${refdir}/pr2-tax.qza
+
+qiime feature-classifier extract-reads \
+  --i-sequences ${refdir}/pr2-seqs.qza \
+  --p-f-primer GTACACACCGCCCGTC \
+  --p-r-primer TGATCCTTCTGCAGGTTCACCTAC \
+  --p-min-length 60 \
+  --p-max-length 250 \
+  --p-n-jobs 16 \
+  --o-reads ${refdir}/pr2-v9-seqs.qza \
+  --o-read-extraction-stats ${refdir}/pr2-v9-extraction-stats.qza
+
+qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads ${refdir}/pr2-v9-seqs.qza \
+  --i-reference-taxonomy ${refdir}/pr2-tax.qza \
+  --o-classifier ${refdir}/pr2-v9-classifier.qza
+```

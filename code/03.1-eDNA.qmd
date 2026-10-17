@@ -1,0 +1,344 @@
+---
+title: "03.1-eDNA: a simple eDNA metabarcoding workflow"
+editor: visual
+---
+
+## What this page does
+
+This page takes raw eDNA sequencing reads and turns them into a table of which organisms were found in each sample. It is meant as a reference for ecologists who are new to bioinformatics: every step is one command (or a short loop), and the text explains what it does and why.
+
+**The data.** eDNA samples from two sites at Yellow Island (Site 1 and Site 5). DNA from each sample was amplified by PCR with primers for two "barcode" genes, and the two products were sequenced together on an Illumina NextSeq 2000 (paired-end, 2 × 301 bp):
+
+| Marker | What it detects | Forward primer | Reverse primer |
+|--------|-----------------|----------------|----------------|
+| 18S V9 | Most eukaryotes (algae, protists, animals, fungi) | `GTACACACCGCCCGTC` | `TGATCCTTCTGCAGGTTCACCTAC` |
+| COI (Leray) | Mostly animals | `GGWACWGGWTGAACWGTWTAYCCYCC` | `TANACYTCNGGRTGNCCRAARAAYCA` |
+
+Letters like `W`, `Y` and `N` in the primers are "wildcards" that match more than one base (e.g. `W` = A or T, `N` = any base).
+
+**The workflow.**
+
+1.  Download the reads
+2.  Import the reads into QIIME 2
+3.  Look at read quality
+4.  Remove primers and split the reads by marker
+5.  Denoise with DADA2 to get ASVs (exact sequences) and a count table
+6.  Download reference databases
+7.  Assign taxonomy to each ASV
+8.  Make bar plots
+
+Almost everything after the download runs in **QIIME 2**, a widely used program for amplicon (barcode) data.
+
+**How to run it.** Run the chunks in order, from top to bottom. All paths are relative to the `code/` folder. Results go to `../output/03.1-eDNA/`.
+
+**Viewing results.** QIIME 2 saves data as `.qza` files and reports as `.qzv` files. To look at a `.qzv`, drag it onto <https://view.qiime2.org>.
+
+## 1. Download the reads
+
+`wget` downloads every read file (`.fastq.gz`) and its checksum file (`.md5`) from the lab server. `-nc` skips files you already have, so you can rerun this if the download stops partway.
+
+```{bash}
+mkdir -p ../data/raw/eDNA-yellow_island-2023
+cd ../data/raw/eDNA-yellow_island-2023
+
+wget -r -np -nd -nc -A "*.fastq.gz,*.md5" \
+  https://owl.fish.washington.edu/nightingales/eDNA-yellow_island-2023/
+```
+
+A checksum is a fingerprint of a file. If a downloaded file's checksum matches the one from the server, the file arrived intact. This prints any file that does **not** match; no output means everything is fine.
+
+```{bash}
+cd ../data/raw/eDNA-yellow_island-2023
+cat *.md5 | md5sum -c --quiet
+```
+
+## 2. Import the reads into QIIME 2
+
+QIIME 2 needs a **manifest**: a table listing each sample and where its two read files (R1 and R2) are. This loop writes one row per sample. It skips samples whose files are empty or that are missing R2 (`Site5t_S125`), since QIIME 2 can't import those.
+
+It also writes a **sample metadata** file, which records information about each sample. Here that is just the site (`Site1` or `Site5`), taken from the sample name. You can add more columns later (date, depth, replicate, ...).
+
+```{bash}
+mkdir -p ../output/03.1-eDNA
+cd ../output/03.1-eDNA
+
+raw=$(realpath ../../data/raw/eDNA-yellow_island-2023)
+
+printf "sample-id\tforward-absolute-filepath\treverse-absolute-filepath\n" > manifest.tsv
+printf "sample-id\tsite\n" > sample-metadata.tsv
+
+for r1 in ${raw}/*_R1_001.fastq.gz; do
+  r2=${r1/_R1_/_R2_}
+  sample=$(basename "$r1" _R1_001.fastq.gz)   # e.g. Yell_July18_Site1a_S83
+  sample=${sample#Yell_July18_}                # e.g. Site1a_S83
+  site=${sample:0:5}                           # e.g. Site1
+
+  # skip samples with no R2 file or no reads
+  if [ ! -f "$r2" ] || [ -z "$(zcat "$r1" | head -c 1)" ]; then
+    echo "Skipping $sample"
+    continue
+  fi
+
+  printf "%s\t%s\t%s\n" "$sample" "$r1" "$r2" >> manifest.tsv
+  printf "%s\t%s\n" "$sample" "$site" >> sample-metadata.tsv
+done
+```
+
+Now import the reads. Every QIIME 2 chunk starts by turning on ("activating") the QIIME 2 software environment, because Quarto runs each chunk in a fresh shell.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifest.tsv \
+  --input-format PairedEndFastqManifestPhred33V2 \
+  --output-path demux.qza
+```
+
+## 3. Look at read quality
+
+This makes a report (`demux.qzv`) with the number of reads per sample and a plot of base quality along the reads. Quality usually drops toward the end of the reads, especially R2. Samples with very few reads (a few hundred or less) won't give useful results.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime demux summarize \
+  --i-data demux.qza \
+  --o-visualization demux.qzv
+```
+
+## 4. Remove primers and split by marker
+
+Each sample contains reads from both markers mixed together. `cutadapt` is run twice: once looking for the 18S V9 primers and once for the COI primers. Each run keeps only the reads that start with that marker's primers and cuts the primers off, so we end up with one set of reads per marker.
+
+-   `--p-front-f` / `--p-front-r`: the primer at the start of R1 / R2. `^` means the primer must be at the very start of the read. The part after `...` is the *other* primer, written in reverse complement. It's only found when a read runs all the way through a short DNA fragment, and it's cut off along with everything after it (adapter and junk). `;optional` means reads are kept whether or not this second primer is found
+-   `--p-discard-untrimmed`: throw away reads without the primers (i.e. reads from the other marker)
+-   `--p-nextseq-trim 20`: trim low-quality bases from the end of reads. The NextSeq reads "no signal" as a run of G's with high quality scores, and this option handles that correctly
+-   `--p-minimum-length 50`: drop reads shorter than 50 bases after trimming
+
+**18S V9:**
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime cutadapt trim-paired \
+  --i-demultiplexed-sequences demux.qza \
+  --p-front-f "^GTACACACCGCCCGTC...GTAGGTGAACCTGCAGAAGGATCA;optional" \
+  --p-front-r "^TGATCCTTCTGCAGGTTCACCTAC...GACGGGCGGTGTGTAC;optional" \
+  --p-discard-untrimmed \
+  --p-nextseq-trim 20 \
+  --p-minimum-length 50 \
+  --p-cores 8 \
+  --o-trimmed-sequences V9-demux.qza \
+  --o-stats V9-cutadapt-stats.qza
+```
+
+**COI:**
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime cutadapt trim-paired \
+  --i-demultiplexed-sequences demux.qza \
+  --p-front-f "^GGWACWGGWTGAACWGTWTAYCCYCC...TGRTTYTTYGGNCAYCCNGARGTNTA;optional" \
+  --p-front-r "^TANACYTCNGGRTGNCCRAARAAYCA...GGRGGRTAWACWGTTCAWCCWGTWCC;optional" \
+  --p-discard-untrimmed \
+  --p-nextseq-trim 20 \
+  --p-minimum-length 50 \
+  --p-cores 8 \
+  --o-trimmed-sequences COI-demux.qza \
+  --o-stats COI-cutadapt-stats.qza
+```
+
+To see what share of each sample's reads belonged to each marker, make a table from the stats (`percent-reads-after` column):
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+for marker in V9 COI; do
+  qiime metadata tabulate \
+    --m-input-file ${marker}-cutadapt-stats.qza \
+    --o-visualization ${marker}-cutadapt-stats.qzv
+done
+```
+
+## 5. Denoise with DADA2
+
+Sequencing makes small errors, so one real DNA sequence shows up as many slightly different reads. **DADA2** learns the error pattern of this sequencing run and uses it to work out the real sequences. It also:
+
+-   filters out low-quality reads
+-   merges each R1/R2 pair into one sequence
+-   removes chimeras (fake sequences made of two different organisms, created during PCR)
+
+The result is a list of **ASVs** (amplicon sequence variants: exact, error-corrected sequences) and a **feature table** with the number of reads of each ASV in each sample. This step is the slowest; expect it to take a while.
+
+`--p-trunc-len-f` / `--p-trunc-len-r` cut R1 / R2 to a fixed length to remove their low-quality ends. Reads shorter than that length are dropped. `0` means "don't cut".
+
+**18S V9.** The V9 region (about 90–190 bp) is shorter than the reads, so cutadapt has already trimmed each read to the right length. No further cutting is needed.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs V9-demux.qza \
+  --p-trunc-len-f 0 \
+  --p-trunc-len-r 0 \
+  --p-n-threads 16 \
+  --o-table V9-table.qza \
+  --o-representative-sequences V9-rep-seqs.qza \
+  --o-denoising-stats V9-dada2-stats.qza \
+  --o-base-transition-stats V9-dada2-error-model.qza
+```
+
+**COI.** The COI region is about 313 bp, longer than either read, so R1 and R2 only overlap near their ends, which is where quality is lowest. Cutting R1 to 200 bp and R2 to 180 bp removes the worst bases and still leaves about 67 bp of overlap for merging (200 + 180 − 313). In a test with three samples, this kept 52–65% of COI reads, compared with 23–32% without cutting.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs COI-demux.qza \
+  --p-trunc-len-f 200 \
+  --p-trunc-len-r 180 \
+  --p-n-threads 16 \
+  --o-table COI-table.qza \
+  --o-representative-sequences COI-rep-seqs.qza \
+  --o-denoising-stats COI-dada2-stats.qza \
+  --o-base-transition-stats COI-dada2-error-model.qza
+```
+
+Check how many reads made it through each DADA2 step (`*-dada2-stats.qzv`). If most reads are lost at "filtered", the truncation lengths are too long; if most are lost at "merged", they are too short (R1 and R2 no longer overlap). `*-table.qzv` shows reads and ASVs per sample.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+for marker in V9 COI; do
+  qiime metadata tabulate \
+    --m-input-file ${marker}-dada2-stats.qza \
+    --o-visualization ${marker}-dada2-stats.qzv
+
+  qiime feature-table summarize \
+    --i-table ${marker}-table.qza \
+    --m-metadata-file sample-metadata.tsv \
+    --o-feature-frequencies ${marker}-feature-frequencies.qza \
+    --o-sample-frequencies ${marker}-sample-frequencies.qza \
+    --o-summary ${marker}-table.qzv
+done
+```
+
+## 6. Download reference databases
+
+To name the organism behind each ASV, we compare it to a **reference database** of DNA sequences from known species.
+
+The databases are saved in `../data/reference/` so they can be reused by other projects. You only need to run these chunks once.
+
+**18S V9: PR2.** PR2 is a curated database of 18S rRNA sequences from protists and other eukaryotes. QIIME 2's `rescript` plugin downloads it and converts it to QIIME 2 format in one step.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+mkdir -p ../data/reference
+cd ../data/reference
+
+qiime rescript get-pr2-data \
+  --o-pr2-sequences pr2-seqs.qza \
+  --o-pr2-taxonomy pr2-taxonomy.qza
+```
+
+**COI: MIDORI2.** MIDORI2 is a database of mitochondrial gene sequences from GenBank. Its files are archived on Zenodo (<https://doi.org/10.5281/zenodo.22685700>). This chunk:
+
+1.  downloads the QIIME-format release (433 MB; it has files for all mitochondrial genes)
+2.  unzips just the two COI files (`CO1`): the sequences and their taxonomy
+3.  checks them against the checksums published with the release (it should print `OK` twice)
+
+```{bash}
+mkdir -p ../data/reference
+cd ../data/reference
+
+zenodo=https://zenodo.org/api/records/22685701/files
+
+curl -L -o MIDORI2_GB273_QIIME.zip ${zenodo}/MIDORI2_GB273_QIIME.zip/content
+curl -L -o MIDORI2_GB273_sha256.txt ${zenodo}/release_sha256.txt/content
+
+unzip -o MIDORI2_GB273_QIIME.zip \
+  QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.fasta.gz \
+  QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.taxon.gz
+
+grep "UNIQ_NUC_GB273_CO1_QIIME" MIDORI2_GB273_sha256.txt | sha256sum -c
+```
+
+Next, import the COI files into QIIME 2. Two small fixes are needed first:
+
+-   QIIME 2 can't read the compressed (`.gz`) sequence file, so `zcat` uncompresses it
+-   MIDORI2 adds an NCBI ID number to every name (e.g. `p__Arthropoda_6656`). The `sed` command removes these numbers so the names are easier to read in plots
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../data/reference
+
+zcat QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.fasta.gz > midori2-CO1-seqs.fasta
+
+zcat QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.taxon.gz \
+  | sed -E 's/_[0-9]+(;|$)/\1/g' > midori2-CO1-taxonomy.tsv
+
+qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path midori2-CO1-seqs.fasta \
+  --output-path midori2-CO1-seqs.qza
+
+qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path midori2-CO1-taxonomy.tsv \
+  --output-path midori2-CO1-taxonomy.qza
+```
+
+## 7. Assign taxonomy
+
+TAXONOMY_TEXT
+
+## 8. Make bar plots
+
+A taxa bar plot shows, for each sample, what share of reads came from each group of organisms. In the viewer you can choose the taxonomic level (phylum, class, ...) and sort or group samples by site.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+for marker in V9 COI; do
+  qiime taxa barplot \
+    --i-table ${marker}-table.qza \
+    --i-taxonomy ${marker}-taxonomy.qza \
+    --m-metadata-file sample-metadata.tsv \
+    --o-visualization ${marker}-taxa-barplot.qzv
+done
+```
+
+## Glossary
+
+-   **Amplicon**: a piece of DNA copied many times by PCR. Here, the 18S V9 or COI barcode region
+-   **ASV (amplicon sequence variant)**: an exact DNA sequence that DADA2 concludes is real (not a sequencing error). Roughly, one ASV ≈ one species or strain
+-   **Chimera**: a fake sequence formed during PCR from two different organisms' DNA
+-   **Feature table**: a table of read counts, with ASVs as rows and samples as columns
+-   **FASTQ**: the file format for sequencing reads: each read's DNA sequence plus a quality score for each base
+-   **Paired-end (R1 / R2)**: each DNA fragment is read from both ends. R1 is the forward read and R2 the reverse read
+-   **Primer**: a short DNA sequence that starts PCR copying at a specific place in the genome
+-   **Reverse complement**: the sequence of the opposite DNA strand, read in the same direction (A↔T, C↔G, reversed)
