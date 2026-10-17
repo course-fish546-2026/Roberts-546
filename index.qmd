@@ -1,0 +1,32 @@
+---
+title: "Steven Roberts · FISH 546 project"
+subtitle: "eDNA of Yellow Island"
+toc: false
+---
+
+Rendered pages from this project. Source code and outputs are in the [GitHub repository](https://github.com/course-fish546-2026/Roberts-546).
+
+**Course:** FISH 546, Bioinformatics for Environmental Sciences, Autumn 2026 · [course site](https://sr320.github.io/course-fish546-2026/)
+
+## eDNA workflows
+
+| Page | What it covers |
+|----------------------------------|--------------------------------------|
+| [03.2 · Beginner eDNA workflow](code/03.2-eDNA.html) | Start here: 6 samples, one marker (18S V9), from raw reads to a taxa plot in R |
+| [03.1 · Simple eDNA workflow](code/03.1-eDNA.html) | All samples, two markers (18S V9 and COI) |
+| [03 · Full eDNA workflow](https://github.com/course-fish546-2026/Roberts-546/blob/main/code/03-eDNA.qmd) | Detailed working version (source only) |
+
+## Other code
+
+| Page | What it covers |
+|----------------------------------|--------------------------------------|
+| [01 · Data download](code/01-data-download.html) | Downloading the raw data |
+| [02 · Data QC](https://github.com/course-fish546-2026/Roberts-546/blob/main/code/02-data-qc.qmd) | Read quality control (source only) |
+| [04 · Stacks demo](code/04-stacks-demo.html) | RADseq demo with Stacks |
+
+## Notebook
+
+| Page | What it covers |
+|----------------------------------|--------------------------------------|
+| [Week 00](notebooks/week00.html) | Repository and shell setup |
+| [Week 01](notebooks/week01.html) | Week 1 notes |
