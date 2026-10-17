@@ -3426,11 +3426,12 @@ done</code></pre>
 </ul>
 <section id="remove-reads-that-couldnt-be-named" class="level3">
 <h3 class="anchored" data-anchor-id="remove-reads-that-couldnt-be-named">Remove reads that couldn’t be named</h3>
-<p>Reads from ASVs labeled <code>Unassigned</code> (and, for 18S, reads from bacteria, which the 18S primers sometimes pick up) are removed first, so the comparison is about eukaryotes we could identify.</p>
+<p>Before comparing sites, each table is filtered to the organisms we want to compare:</p>
 <ul>
-<li><code>--p-include &quot;d__Eukaryota&quot;</code>: for 18S V9, keep only ASVs whose name contains <code>d__Eukaryota</code> (PR2’s label for eukaryotes)</li>
-<li><code>--p-exclude &quot;Unassigned&quot;</code>: for COI, remove ASVs labeled <code>Unassigned</code></li>
+<li><strong>18S V9: eukaryotes.</strong> <code>--p-include &quot;d__Eukaryota&quot;</code> keeps only ASVs whose name contains <code>d__Eukaryota</code> (PR2’s label for eukaryotes). This removes <code>Unassigned</code> ASVs and bacteria, which the 18S primers sometimes pick up</li>
+<li><strong>COI: animals.</strong> The Leray COI primers are designed for animals, but in this data set they also amplified many diatoms (about a third of COI reads) and other algae. <code>--p-include</code> keeps only ASVs whose name contains one of the animal phyla in the list, which also removes <code>Unassigned</code> ASVs. MIDORI2 has no single “animals” label, so the list names every animal phylum (most aren’t in this data set, but the list then works for other data too). The list is built up over several lines with <code>+=</code>, which adds text to the end of a variable</li>
 </ul>
+<p><code>--p-include</code> keeps an ASV if its name <em>contains</em> any of the terms, separated by commas.</p>
 <p>The <code>summarize</code> command then shows how many reads each sample has left, which is needed for the next step.</p>
 <pre class="{bash}"><code>source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
 conda activate qiime2-2026.7
@@ -3442,10 +3443,18 @@ qiime taxa filter-table \
   --p-include &quot;d__Eukaryota&quot; \
   --o-filtered-table V9-table-filtered.qza
 
+animal_phyla=&quot;p__Acanthocephala,p__Annelida,p__Arthropoda,p__Brachiopoda,p__Bryozoa,&quot;
+animal_phyla+=&quot;p__Chaetognatha,p__Chordata,p__Cnidaria,p__Ctenophora,p__Cycliophora,&quot;
+animal_phyla+=&quot;p__Dicyemida,p__Echinodermata,p__Entoprocta,p__Gastrotricha,p__Gnathostomulida,&quot;
+animal_phyla+=&quot;p__Hemichordata,p__Kinorhyncha,p__Loricifera,p__Micrognathozoa,p__Mollusca,&quot;
+animal_phyla+=&quot;p__Nematoda,p__Nematomorpha,p__Nemertea,p__Onychophora,p__Orthonectida,&quot;
+animal_phyla+=&quot;p__Phoronida,p__Placozoa,p__Platyhelminthes,p__Porifera,p__Priapulida,&quot;
+animal_phyla+=&quot;p__Rotifera,p__Tardigrada,p__Xenacoelomorpha&quot;
+
 qiime taxa filter-table \
   --i-table COI-table.qza \
   --i-taxonomy COI-taxonomy.qza \
-  --p-exclude &quot;Unassigned&quot; \
+  --p-include &quot;${animal_phyla}&quot; \
   --o-filtered-table COI-table-filtered.qza
 
 for marker in V9 COI; do
@@ -3456,7 +3465,7 @@ for marker in V9 COI; do
     --o-sample-frequencies ${marker}-filtered-sample-frequencies.qza \
     --o-summary ${marker}-table-filtered.qzv
 done</code></pre>
-<p>COI has many diatom reads (about a third in this data set), because the Leray primers also amplify diatoms. To study only animals, you could also filter the COI table to animal phyla (e.g. <code>--p-include &quot;p__Arthropoda,p__Annelida,p__Mollusca,p__Cnidaria&quot;</code>).</p>
+<p>In this data set, the animal filter keeps about 403,000 of the 1.63 million COI reads (25%) and 1,321 of 7,059 ASVs. The animals are mostly arthropods (66% of animal reads), annelids (17%), cnidarians (6%), molluscs (4%) and bryozoans (3%).</p>
 </section>
 <section id="choose-a-rarefaction-depth" class="level3">
 <h3 class="anchored" data-anchor-id="choose-a-rarefaction-depth">Choose a rarefaction depth</h3>
@@ -3486,7 +3495,7 @@ qiime diversity alpha-rarefaction \
 <p>The depths used here:</p>
 <ul>
 <li><strong>18S V9: 15,000 reads.</strong> The curves are close to level by this depth. Five samples have fewer reads and are left out (<code>Site5g</code>, <code>Site1J</code>, <code>Site1U</code>, <code>Site5q</code>, <code>Site5f</code>; most of their reads were COI), leaving 46 samples (25 from Site 1, 21 from Site 5)</li>
-<li><strong>COI: 2,000 reads.</strong> Three samples have fewer reads and are left out (<code>Site5h</code>, <code>Site5f</code>, <code>Site1f</code>; most of their reads were 18S), leaving 49 samples (27 from Site 1, 22 from Site 5). The COI curves are still rising at 2,000, so richness is underestimated. Comparisons between sites are still fair, since every sample is subsampled to the same depth. A higher depth would drop more samples</li>
+<li><strong>COI (animals): 1,000 reads.</strong> Only a quarter of COI reads are animals, so samples have far fewer reads here. Five samples have fewer than 1,000 animal reads and are left out (<code>Site5h</code>, <code>Site5f</code>, <code>Site1bb</code>, <code>Site1q</code>, <code>Site1f</code>), leaving 47 samples (25 from Site 1, 22 from Site 5). The COI curves are still rising at 1,000, so richness is underestimated. Comparisons between sites are still fair, since every sample is subsampled to the same depth. A depth of 2,000 would drop 15 samples</li>
 </ul>
 <p>If you rerun this with new data, check the two <code>.qzv</code> files and change the depths in the next chunk.</p>
 </section>
@@ -3512,7 +3521,7 @@ qiime diversity core-metrics \
 
 qiime diversity core-metrics \
   --i-table COI-table-filtered.qza \
-  --p-sampling-depth 2000 \
+  --p-sampling-depth 1000 \
   --m-metadata-file sample-metadata.tsv \
   --p-random-seed 42 \
   --output-dir COI-core-metrics</code></pre>
@@ -3547,6 +3556,13 @@ for marker in V9 COI; do
 done</code></pre>
 <p><strong>Results from this run:</strong></p>
 <table class="table">
+<colgroup>
+<col style="width: 13%">
+<col style="width: 15%">
+<col style="width: 28%">
+<col style="width: 28%">
+<col style="width: 15%">
+</colgroup>
 <thead>
 <tr class="header">
 <th>Marker</th>
@@ -3579,21 +3595,21 @@ done</code></pre>
 <td>0.001</td>
 </tr>
 <tr class="even">
-<td>COI</td>
+<td>COI (animals)</td>
 <td>Shannon diversity</td>
-<td>4.8</td>
-<td>5.4</td>
-<td>0.08</td>
+<td>3.7</td>
+<td>3.7</td>
+<td>0.92</td>
 </tr>
 <tr class="odd">
-<td>COI</td>
+<td>COI (animals)</td>
 <td>Number of ASVs</td>
-<td>152</td>
-<td>178</td>
-<td>0.17</td>
+<td>60</td>
+<td>58</td>
+<td>0.85</td>
 </tr>
 <tr class="even">
-<td>COI</td>
+<td>COI (animals)</td>
 <td>Community composition (Bray-Curtis PERMANOVA)</td>
 <td></td>
 <td></td>
@@ -3601,7 +3617,7 @@ done</code></pre>
 </tr>
 </tbody>
 </table>
-<p>Site 1 has more diverse eukaryote communities by 18S, but COI shows no clear difference in alpha diversity. Both markers show that the two sites have different communities (PERMANOVA). A significant PERMANOVA can also mean the sites differ in how <em>variable</em> their samples are, not only in their average community; <code>qiime diversity beta-group-significance --p-method permdisp</code> tests for that.</p>
+<p>Site 1 has more diverse eukaryote communities by 18S. For animals (COI), the two sites have about the same diversity, but different species (PERMANOVA). Both markers show that the two sites have different communities. A significant PERMANOVA can also mean the sites differ in how <em>variable</em> their samples are, not only in their average community; <code>qiime diversity beta-group-significance --p-method permdisp</code> tests for that.</p>
 </section>
 </section>
 <section id="glossary" class="level2">
