@@ -30,6 +30,7 @@ Once you understand this page, `03.1-eDNA.qmd` does the same thing for all sampl
 6.  Download a reference database (PR2)
 7.  Name each ASV (assign taxonomy)
 8.  Make a bar plot
+9.  Make your own plot in R
 
 **Tools.** Almost every step uses **QIIME 2**, a popular program for barcode (amplicon) data. QIIME 2 commands all look like this:
 
@@ -282,6 +283,86 @@ qiime taxa barplot \
   --m-metadata-file sample-metadata.tsv \
   --o-visualization V9-taxa-barplot.qzv
 ```
+
+## 9. Make your own plot in R
+
+The QIIME 2 bar plot is interactive, but you'll often want a figure you can change yourself. First, turn the results into a plain table that R can read:
+
+-   `qiime taxa collapse` adds up the reads of all ASVs with the same name at one taxonomic level. Level 5 in PR2 is roughly "class" (e.g. Arthropoda, Dinophyceae)
+-   `qiime tools export` takes the table out of the `.qza` file. It comes out as a `.biom` file
+-   `biom convert` turns the `.biom` file into a tab-separated text file (`.tsv`)
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.2-eDNA
+
+qiime taxa collapse \
+  --i-table V9-table.qza \
+  --i-taxonomy V9-taxonomy.qza \
+  --p-level 5 \
+  --o-collapsed-table V9-table-level5.qza
+
+qiime tools export \
+  --input-path V9-table-level5.qza \
+  --output-path V9-table-level5
+
+biom convert \
+  --to-tsv \
+  -i V9-table-level5/feature-table.biom \
+  -o V9-table-level5.tsv
+```
+
+Now plot it in R. Each step is a few lines:
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1. Read the table (skip the first comment line)
+counts <- read_tsv("../output/03.2-eDNA/V9-table-level5.tsv", skip = 1)
+names(counts)[1] <- "taxon"
+
+# 2. Shorten each name to its last named level
+#    "d__Eukaryota;sgr__Obazoa;dv__Opisthokonta;dvs__Metazoa;c__Arthropoda" -> "Arthropoda"
+counts$taxon <- gsub(";__", "", counts$taxon)        # drop empty levels
+counts$taxon <- sub(".*;", "", counts$taxon)         # keep the last level
+counts$taxon <- sub("^[a-z]+__", "", counts$taxon)   # drop the "c__" prefix
+
+# 3. Make it "long": one row per sample per taxon
+long <- counts %>%
+  pivot_longer(-taxon, names_to = "sample", values_to = "reads")
+
+# 4. Turn read counts into percent of each sample's reads
+long <- long %>%
+  group_by(sample) %>%
+  mutate(percent = 100 * reads / sum(reads)) %>%
+  ungroup()
+
+# 5. Keep the 10 most common groups; lump the rest into "Other"
+top10 <- long %>%
+  group_by(taxon) %>%
+  summarise(total = sum(percent)) %>%
+  slice_max(total, n = 10) %>%
+  pull(taxon)
+
+long$taxon <- ifelse(long$taxon %in% top10, long$taxon, "Other")
+
+# 6. Add the site, taken from the sample name ("Site1a_S83" -> "Site1")
+long$site <- substr(long$sample, 1, 5)
+
+# 7. Plot
+ggplot(long, aes(x = sample, y = percent, fill = taxon)) +
+  geom_col() +
+  facet_wrap(~ site, scales = "free_x") +
+  labs(x = "Sample", y = "Percent of reads", fill = "Group") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Things to try: change `--p-level 5` to `4` or `6` and rerun both chunks, or change `n = 10` to show more or fewer groups.
 
 ## What next?
 
