@@ -16,3 +16,12 @@ data/raw/*
 Thumbs.db
 
 **/*.quarto_ipynb
+
+# Large derived reads (regenerate from code/03-eDNA.qmd)
+data/trimmed/**/*.fastq.gz
+data/primer-trimmed/**/*.fastq.gz
+data/trimmed-qc/**/*.fastq.gz
+**/multiqc_data/
+
+# Stray R graphics device output
+Rplots.pdf

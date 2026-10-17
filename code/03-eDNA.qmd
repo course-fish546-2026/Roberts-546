@@ -1,0 +1,193 @@
+---
+title: "03-eDNA"
+editor: visual
+---
+
+## About these libraries
+
+These are environmental DNA (eDNA) metabarcoding libraries from samples collected at two sites at Yellow Island (Site 1 and Site 5), with "July18" in the file names and the data folder labeled 2023. The details below are worked out from the reads themselves, not from lab records, so check them against the lab notebook.
+
+-   **Amplicon (PCR) libraries.** DNA extracted from each sample was amplified with primers for two markers: 18S V9 (primers 1391f / EukBr, ~170 bp product, for eukaryotes in general) and COI (Leray primers mlCOIintF / jgHCO2198, ~313 bp product, mostly for animals). Both markers are in the same library for most samples: about 60–90% of reads are 18S V9 and the rest COI. A few samples (Site1U, Site5g, Site5q, Site1J, Site1ee) are almost all COI. The primer sequences are still on the start of every read.
+-   **Illumina adapters and indexes.** The reads contain the Nextera-style adapter sequence (`CTGTCTCTTATACACATCT`), and each read header ends with two index sequences (e.g. `CCAGGCA+CCAAGGT`). This fits a two-step PCR: the first PCR adds the marker primers plus adapter "tails", and a second short PCR adds a pair of indexes that identify each sample.
+-   **Sequencing.** Paired-end 2 × 301 bp reads on an Illumina NextSeq 2000 (instrument ID `VH01481` in the read headers). The 18S V9 product is shorter than the reads, so most reads run through the whole product and into the adapter. This instrument records "no signal" as G, so the ends of these reads are long runs of G's.
+-   **Sample names** follow `Yell_July18_Site<site><replicate>_S<number>`, where `S<number>` is the sample's position on the sequencing sample sheet.
+
+## Download Yellow Island 2023 eDNA data
+
+Raw reads (`*.fastq.gz`) and their `.md5` checksums from <https://owl.fish.washington.edu/nightingales/eDNA-yellow_island-2023/>
+
+This chunk creates a folder for the data in `../data/raw/eDNA-yellow_island-2023`, moves into it, and uses `wget` to download every file listed on the server. The options do the following:
+
+-   `-r -np`: follow the links in the directory listing (recursive), but never go up to the parent directory
+-   `-nd`: save all files directly in the current folder instead of recreating the server's folder structure
+-   `-nc`: skip files that are already downloaded, so the chunk can be rerun safely if the download is interrupted
+-   `-A "*.fastq.gz,*.md5"`: keep only the sequence files and their checksum files
+-   `-R "index.html*"`: do not keep the directory listing pages
+-   `-X ".../@eaDir"`: skip the `@eaDir` folder, which holds server thumbnails and not data
+
+```{bash}
+mkdir -p ../data/raw/eDNA-yellow_island-2023
+cd ../data/raw/eDNA-yellow_island-2023
+
+wget -r -np -nd -nc \
+  -A "*.fastq.gz,*.md5" \
+  -R "index.html*" \
+  -X "/nightingales/eDNA-yellow_island-2023/@eaDir" \
+  https://owl.fish.washington.edu/nightingales/eDNA-yellow_island-2023/
+```
+
+## Check that downloads are complete
+
+This chunk checks the download. First it counts the `.fastq.gz` files; there should be 119. Then it combines all the `.md5` files and passes them to `md5sum -c`, which computes a checksum for each downloaded file and compares it to the one from the server. Only files that fail are printed. If every file matches, it prints "All checksums OK". A failed file is corrupt or incomplete: delete it and rerun the download chunk.
+
+```{bash}
+cd ../data/raw/eDNA-yellow_island-2023
+ls *.fastq.gz | wc -l
+cat *.md5 | md5sum -c - | grep -v ': OK$' || echo "All checksums OK"
+```
+
+## Trim reads with fastp
+
+This chunk trims every sample with `fastp` (`/home/shared/fastp`), keeping each R1/R2 pair together. It loops over the R1 files, makes the matching R2 file name by swapping `_R1_` for `_R2_`, skips any sample with no R2 file (`Site5t_S125` has only R1 on the server), and writes the trimmed reads to `../data/trimmed/eDNA-yellow_island-2023`. With default settings `fastp` removes adapters, trims low-quality bases, and drops reads that end up too short. It also writes an HTML and a JSON QC report for each sample.
+
+```{bash}
+mkdir -p ../data/trimmed/eDNA-yellow_island-2023
+
+for r1 in ../data/raw/eDNA-yellow_island-2023/*_R1_001.fastq.gz; do
+  r2=${r1/_R1_/_R2_}
+  sample=$(basename "$r1" _R1_001.fastq.gz)
+
+  if [ ! -f "$r2" ]; then
+    echo "Skipping $sample: no R2 file"
+    continue
+  fi
+
+  /home/shared/fastp \
+    -i "$r1" -I "$r2" \
+    -o ../data/trimmed/eDNA-yellow_island-2023/${sample}_R1_trimmed.fastq.gz \
+    -O ../data/trimmed/eDNA-yellow_island-2023/${sample}_R2_trimmed.fastq.gz \
+    -h ../data/trimmed/eDNA-yellow_island-2023/${sample}_fastp.html \
+    -j ../data/trimmed/eDNA-yellow_island-2023/${sample}_fastp.json
+done
+```
+
+## Summarize fastp reports with MultiQC
+
+This chunk runs MultiQC on the trimmed-reads folder. MultiQC finds all the `*_fastp.json` reports from the trimming step and combines them into a single report, so you can compare every sample in one place: reads before and after filtering, duplication, adapter content, and quality scores. The report is written to `../data/trimmed/eDNA-yellow_island-2023/multiqc/multiqc_report.html`.
+
+-   `-o`: the folder to write the report into
+-   `-f`: overwrite an existing report, so the chunk can be rerun
+
+```{bash}
+/opt/anaconda/anaconda3/bin/multiqc \
+  ../data/trimmed/eDNA-yellow_island-2023 \
+  -o ../data/trimmed/eDNA-yellow_island-2023/multiqc \
+  -f
+```
+
+## Remove primers and split by marker with cutadapt
+
+The fastp/MultiQC reports showed that every sample has reads from two amplicons, and that the PCR primers are still on the reads:
+
+| Marker      | Forward primer (R1)                     | Reverse primer (R2)                          |
+|-------------|-----------------------------------------|----------------------------------------------|
+| 18S V9      | `GTACACACCGCCCGTC` (1391f)              | `TGATCCTTCTGCAGGTTCACCTAC` (EukBr)           |
+| COI (Leray) | `GGWACWGGWTGAACWGTWTAYCCYCC` (mlCOIintF) | `TAIACYTCIGGRTGICCRAARAAYCA` (jgHCO2198)     |
+
+This chunk runs `cutadapt` (`/home/shared/cutadapt-venv/bin/cutadapt`) on the **raw** reads of each sample. It finds which primer pair each read starts with, cuts that primer off, and writes the read pair into a `V9/` or `COI/` folder under `../data/primer-trimmed/eDNA-yellow_island-2023`. The loop skips samples with no R2 file (`Site5t_S125`) and samples whose files are empty (`Site1aa`, `Site1x`, `Site5d`, `Site5dd`, `Site5gg`).
+
+-   `-g` / `-G`: the forward primer to look for in R1 and the reverse primer in R2. `^` anchors the primer to the start of the read. The `NAME=` part labels each primer so `{name}` in the output path becomes `V9` or `COI`
+-   `--pair-adapters`: a read pair only counts as a match if R1 and R2 match primers from the same marker
+-   `--discard-untrimmed`: drop read pairs that don't start with either primer pair
+-   `-e 0.1`: allow up to 10% mismatches in the primer
+-   `-j 8`: use 8 CPU cores
+-   The `I` (inosine) bases in the COI reverse primer are written as `N`, since inosine pairs with any base
+
+A cutadapt log for each sample is saved as `${sample}_cutadapt.log`.
+
+```{bash}
+outdir=../data/primer-trimmed/eDNA-yellow_island-2023
+mkdir -p ${outdir}/V9 ${outdir}/COI
+
+for r1 in ../data/raw/eDNA-yellow_island-2023/*_R1_001.fastq.gz; do
+  r2=${r1/_R1_/_R2_}
+  sample=$(basename "$r1" _R1_001.fastq.gz)
+
+  if [ ! -f "$r2" ]; then
+    echo "Skipping $sample: no R2 file"
+    continue
+  fi
+
+  if [ -z "$(zcat "$r1" | head -c 1)" ]; then
+    echo "Skipping $sample: no reads"
+    continue
+  fi
+
+  /home/shared/cutadapt-venv/bin/cutadapt \
+    -g V9=^GTACACACCGCCCGTC -G V9=^TGATCCTTCTGCAGGTTCACCTAC \
+    -g COI=^GGWACWGGWTGAACWGTWTAYCCYCC -G COI=^TANACYTCNGGRTGNCCRAARAAYCA \
+    --pair-adapters --discard-untrimmed -e 0.1 -j 8 \
+    -o ${outdir}/{name}/${sample}_R1.fastq.gz \
+    -p ${outdir}/{name}/${sample}_R2.fastq.gz \
+    "$r1" "$r2" \
+    > ${outdir}/${sample}_cutadapt.log
+done
+```
+
+## Quality trim each marker with fastp
+
+This chunk runs `fastp` again, now on the primer-trimmed reads, once for each marker folder. The trimmed reads and fastp reports go to `../data/trimmed-qc/eDNA-yellow_island-2023/V9` and `.../COI`.
+
+-   `--detect_adapter_for_pe`: look for adapter sequence in each read, as well as finding it by overlapping R1 and R2, so it is also removed from pairs that don't overlap well
+-   `--cut_right`: scan each read from the start in windows of 4 bases (`--cut_right_window_size 4`); when a window's average quality falls below Q20 (`--cut_right_mean_quality 20`), cut the read there and drop the rest
+-   `-g`: trim runs of G's from the ends of reads. These reads come from a two-color Illumina sequencer (NextSeq 2000), which records "no signal" as G, so reads that run past the end of the DNA fragment end in a string of G's. fastp only turns this on by itself for instruments it recognizes, and it doesn't recognize this one
+-   `-l 50`: drop read pairs where either read is shorter than 50 bp after trimming (the 18S V9 region is about 90–190 bp)
+-   `-w 8`: use 8 threads
+
+Reads are not merged here, so R1 and R2 stay separate for a later step such as DADA2.
+
+```{bash}
+indir=../data/primer-trimmed/eDNA-yellow_island-2023
+outdir=../data/trimmed-qc/eDNA-yellow_island-2023
+
+for marker in V9 COI; do
+  mkdir -p ${outdir}/${marker}
+
+  for r1 in ${indir}/${marker}/*_R1.fastq.gz; do
+    r2=${r1/_R1/_R2}
+    sample=$(basename "$r1" _R1.fastq.gz)
+
+    /home/shared/fastp \
+      -i "$r1" -I "$r2" \
+      -o ${outdir}/${marker}/${sample}_R1_trimmed.fastq.gz \
+      -O ${outdir}/${marker}/${sample}_R2_trimmed.fastq.gz \
+      --detect_adapter_for_pe \
+      --cut_right --cut_right_window_size 4 --cut_right_mean_quality 20 \
+      -g \
+      -l 50 \
+      -w 8 \
+      -h ${outdir}/${marker}/${sample}_fastp.html \
+      -j ${outdir}/${marker}/${sample}_fastp.json
+  done
+done
+```
+
+## Summarize quality-trimmed reports with MultiQC
+
+This chunk runs MultiQC once for each marker. For each marker it reads the `*_fastp.json` reports in `../data/trimmed-qc/eDNA-yellow_island-2023/V9` or `.../COI` and combines them into one report. You can then check how many reads each sample kept and the read lengths and quality after trimming, for 18S V9 and COI separately.
+
+-   `-o`: write the report into a `multiqc` folder inside that marker's folder (for example `.../V9/multiqc/V9_multiqc_report.html`)
+-   `-n`: name the report after the marker (`V9_multiqc_report.html` or `COI_multiqc_report.html`), so the two reports are easy to tell apart
+-   `-f`: overwrite an existing report, so the chunk can be rerun
+
+```{bash}
+outdir=../data/trimmed-qc/eDNA-yellow_island-2023
+
+for marker in V9 COI; do
+  /opt/anaconda/anaconda3/bin/multiqc \
+    ${outdir}/${marker} \
+    -o ${outdir}/${marker}/multiqc \
+    -n ${marker}_multiqc_report.html \
+    -f
+done
+```

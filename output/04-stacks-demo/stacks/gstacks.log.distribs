@@ -1,0 +1,79 @@
+# Note: Individual distributions can be extracted using the `stacks-dist-extract` utility.
+#       e.g. `stacks-dist-extract gstacks.log.distribs dist_name`
+
+BEGIN effective_coverages_per_sample
+# For mean_cov_ns, the coverage at each locus is weighted by the number of
+# samples present at that locus (i.e. coverage at shared loci counts more).
+sample	n_loci	n_used_fw_reads	mean_cov	mean_cov_ns
+PB_01	289	5529	19.131	19.161
+PB_02	285	5607	19.674	19.655
+PB_03	283	5515	19.488	19.486
+PB_04	282	5610	19.894	19.885
+PB_05	282	5477	19.422	19.431
+PB_06	280	5332	19.043	19.007
+PB_07	278	5535	19.910	19.872
+PB_08	281	5374	19.125	19.148
+PB_09	285	5480	19.228	19.256
+PB_10	279	5293	18.971	18.927
+SJ_01	285	5632	19.761	19.774
+SJ_02	286	5419	18.948	18.969
+SJ_03	276	5236	18.971	18.972
+SJ_04	284	5651	19.898	19.877
+SJ_05	281	5384	19.160	19.154
+SJ_06	283	5637	19.919	19.932
+SJ_07	275	5496	19.985	19.967
+SJ_08	278	5461	19.644	19.659
+SJ_09	275	5317	19.335	19.334
+SJ_10	288	5470	18.993	18.956
+END effective_coverages_per_sample
+
+BEGIN phasing_rates_per_sample
+sample	n_gts	n_multisnp_hets	n_phased	misphasing_rate
+PB_01	220	7	7	0.000
+PB_02	215	8	8	0.000
+PB_03	214	5	5	0.000
+PB_04	217	5	5	0.000
+PB_05	215	3	3	0.000
+PB_06	212	5	5	0.000
+PB_07	209	6	6	0.000
+PB_08	212	4	4	0.000
+PB_09	215	7	7	0.000
+PB_10	211	6	6	0.000
+SJ_01	215	6	6	0.000
+SJ_02	217	7	7	0.000
+SJ_03	207	5	5	0.000
+SJ_04	218	6	6	0.000
+SJ_05	212	5	5	0.000
+SJ_06	213	5	5	0.000
+SJ_07	204	4	4	0.000
+SJ_08	210	6	6	0.000
+SJ_09	206	5	5	0.000
+SJ_10	218	2	2	0.000
+END phasing_rates_per_sample
+
+BEGIN clockings
+Num. threads: 8
+Parallel time: 0.2
+Average thread time spent:
+     0.0  reading (7.0%)
+     0.1  processing (78.5%)
+             0.1 pre-alignments block (58.5%)
+             0.0  reformatting fw-reads (0.8%)
+             0.0  assembling (16.9%)
+             0.0  initializing alignments (0.4%)
+             0.1  aligning (39.2%)
+             0.0  merging read pairs (1.1%)
+             0.0 post-alignments block (19.0%)
+             0.0  filtering reads (0.0%)
+             0.0  counting nucleotides (5.0%)
+             0.0  genotyping (2.4%)
+             0.0  haplotyping (0.1%)
+             0.0  computing consensus (0.0%)
+             0.0  building_fa (0.1%)
+             0.0  building_vcf (11.2%)
+     0.0  writing_fa (0.0%)
+     0.0  writing_vcf (13.3%)
+     0.0  clocking (0.1%)
+Total time spent writing vcf: 0.0 (16.0%)
+VCFwrite block size: mean=1.9(n=162); max=7
+END clockings

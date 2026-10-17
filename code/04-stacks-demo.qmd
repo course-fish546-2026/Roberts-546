@@ -1,0 +1,439 @@
+---
+title: "04-stacks-demo"
+editor: visual
+execute:
+  eval: false
+---
+
+## About this document
+
+This is a practice run of the [Stacks](https://catchenlab.life.illinois.edu/stacks/) pipeline (version 2.68, installed at `/home/shared/stacks-2.68`) on a **made-up** RAD-seq dataset. The dataset stands in for two eelgrass (*Zostera marina*) populations:
+
+-   **PB**, 10 plants from "Padilla Bay"
+-   **SJ**, 10 plants from "San Juan Island"
+
+The reads are simulated in the first chunk, so we know the true answer: most loci have the same allele frequencies in both populations, but some loci are set up to differ strongly between them. If the pipeline works, `populations` should find low overall F~ST~ with a small set of high-F~ST~ loci.
+
+**All chunks are set to `eval: false`** (see `execute:` in the header) so rendering this file does not run anything. To run a chunk, run it by hand in RStudio, or delete `eval: false` from the header.
+
+### The steps
+
+| Step | Program           | What it does                                                                          |
+|------|-------------------|---------------------------------------------------------------------------------------|
+| 1    | Python            | Simulate a multiplexed single-end SbfI RAD library                                    |
+| 2    | `process_radtags` | Demultiplex by barcode, check cut site, drop low-quality reads                        |
+| 3    | `ustacks`         | Build loci (stacks) within each individual                                            |
+| 4    | `cstacks`         | Merge loci from all individuals into one catalog                                      |
+| 5    | `sstacks`         | Match each individual's loci to the catalog                                           |
+| 6    | `tsv2bam`         | Reorganize the data by locus instead of by sample                                     |
+| 7    | `gstacks`         | Call SNPs and genotypes at each catalog locus                                         |
+| 8    | `populations`     | Filter loci, compute population statistics (F~ST~ etc.), export VCF/GenePop/STRUCTURE |
+
+Stacks has a wrapper script, `denovo_map.pl`, that runs steps 3--8 in one command. In this copy of Stacks the script was not installed (it still has a `_BINDIR_` placeholder), so here we run each program on its own. That is also easier to follow because you can look at the output from each step.
+
+## Set paths
+
+This chunk sets variables that the later bash chunks use: where Stacks is, where the demo data go, and how many CPU threads to use. Each bash chunk in Quarto runs in a new shell, so variables do not carry over between chunks. To get around that, this chunk writes the variables to a small file (`stacks-demo.env`), and every later chunk loads it with `source`.
+
+```{bash}
+mkdir -p ../output/04-stacks-demo
+
+cat > ../output/04-stacks-demo/stacks-demo.env << 'EOF'
+STACKS=/home/shared/stacks-2.68
+DEMO=../data/stacks-demo
+OUT=../output/04-stacks-demo
+THREADS=8
+EOF
+
+cat ../output/04-stacks-demo/stacks-demo.env
+```
+
+## Step 1: Simulate a demo eelgrass RAD-seq dataset
+
+This chunk writes three files to `../data/stacks-demo/`:
+
+1.  **`raw/eelgrass_demo_R1.fastq.gz`**: one multiplexed FASTQ file, like what comes off the sequencer before demultiplexing. Every read is 100 bp and is built like this:
+
+    `[6 bp barcode][TGCAGG = SbfI cut-site remnant][88 bp of genomic sequence]`
+
+2.  **`barcodes.tsv`**: which barcode belongs to which plant (`process_radtags` needs this).
+
+3.  **`popmap.tsv`**: which population each plant belongs to (most Stacks programs need this).
+
+How the simulation works:
+
+-   It makes 300 random 88 bp "genome" sequences, one per RAD locus.
+-   About 60% of loci get one SNP and 15% get two SNPs. The rest have no variation.
+-   Each SNP gets an allele frequency for PB and for SJ. For most SNPs the two frequencies are close (low differentiation). For about 10% of SNPs ("outlier" loci) the frequencies are far apart, for example 0.9 in PB and 0.1 in SJ.
+-   Each plant gets a genotype at every SNP, drawn under Hardy--Weinberg (two random draws from its population's frequency).
+-   The number of reads per locus per plant is random (average about 20). About 5% of locus-by-plant combinations get zero reads, to mimic missing data.
+-   Each base has a 0.2% chance of being a sequencing error. A few reads also get an error in the barcode, so the `-r` (rescue) option in `process_radtags` has something to do.
+-   The true allele frequencies are saved to `truth_snps.tsv` so you can compare them with what Stacks finds.
+
+`random.seed(546)` makes the simulation give the same reads every time.
+
+```{python}
+import gzip, os, random
+
+random.seed(546)
+
+demo_dir = "../data/stacks-demo"
+os.makedirs(f"{demo_dir}/raw", exist_ok=True)
+
+BASES = "ACGT"
+CUT = "TGCAGG"                      # what is left of the SbfI site (CCTGCA^GG) at the start of the read
+LOCUS_LEN = 88                      # 6 barcode + 6 cut site + 88 = 100 bp reads
+N_LOCI = 300
+N_PER_POP = 10
+POPS = ["PB", "SJ"]                 # PB = "Padilla Bay", SJ = "San Juan Island" (both pretend)
+MEAN_DEPTH = 20
+DROPOUT = 0.05                      # chance a plant has no reads at a locus
+ERR = 0.002                         # per-base sequencing error rate
+OUTLIER_FRAC = 0.10                 # share of SNPs with very different frequencies in PB and SJ
+
+# 20 barcodes, all at least 3 differences apart, so 1 mismatch can be fixed
+barcodes = ["AACAAC", "AACCGA", "AACGCG", "AAGACA", "AAGCAG", "AAGGTC",
+            "AAGTGT", "AATAGG", "AATCCT", "AATGAA", "ACAACC", "ACACAA",
+            "ACAGGT", "ACATTG", "ACCATA", "ACCTAT", "ACGCGC", "ACTTCA",
+            "AGAAGA", "AGACCG"]
+
+samples = [f"{pop}_{i:02d}" for pop in POPS for i in range(1, N_PER_POP + 1)]
+sample_pop = {s: s.split("_")[0] for s in samples}
+sample_bc = dict(zip(samples, barcodes))
+
+def rand_seq(n):
+    return "".join(random.choice(BASES) for _ in range(n))
+
+def mutate(base):
+    return random.choice([b for b in BASES if b != base])
+
+def clamp(p):
+    return min(max(p, 0.02), 0.98)
+
+# --- Build loci and SNPs -------------------------------------------------
+loci = []        # each locus: reference sequence + list of SNPs
+truth = []       # rows for truth_snps.tsv
+for loc in range(N_LOCI):
+    ref = rand_seq(LOCUS_LEN)
+    n_snps = random.choices([0, 1, 2], weights=[0.25, 0.60, 0.15])[0]
+    positions = sorted(random.sample(range(5, LOCUS_LEN - 5), n_snps))
+    snps = []
+    for pos in positions:
+        alt = mutate(ref[pos])
+        outlier = random.random() < OUTLIER_FRAC
+        if outlier:
+            p_pb = random.uniform(0.8, 0.95)
+            p_sj = 1 - p_pb + random.uniform(-0.05, 0.05)
+        else:
+            p_shared = random.uniform(0.1, 0.9)
+            p_pb = p_shared + random.uniform(-0.05, 0.05)
+            p_sj = p_shared + random.uniform(-0.05, 0.05)
+        freqs = {"PB": clamp(p_pb), "SJ": clamp(p_sj)}   # frequency of the ALT allele
+        snps.append({"pos": pos, "alt": alt, "freqs": freqs})
+        truth.append([loc, pos, ref[pos], alt, round(freqs["PB"], 3),
+                      round(freqs["SJ"], 3), "outlier" if outlier else "neutral"])
+    loci.append({"ref": ref, "snps": snps})
+
+# --- Genotype each plant and write reads ---------------------------------
+def make_haplotype(locus, pop):
+    seq = list(locus["ref"])
+    for snp in locus["snps"]:
+        if random.random() < snp["freqs"][pop]:
+            seq[snp["pos"]] = snp["alt"]
+    return "".join(seq)
+
+def add_errors(seq, rate):
+    return "".join(mutate(b) if random.random() < rate else b for b in seq)
+
+read_id = 0
+with gzip.open(f"{demo_dir}/raw/eelgrass_demo_R1.fastq.gz", "wt") as fq:
+    for s in samples:
+        pop, bc = sample_pop[s], sample_bc[s]
+        for locus in loci:
+            if random.random() < DROPOUT:
+                continue
+            hap1 = make_haplotype(locus, pop)       # diploid: two haplotypes
+            hap2 = make_haplotype(locus, pop)
+            depth = max(1, int(random.gauss(MEAN_DEPTH, 6)))
+            for _ in range(depth):
+                genomic = random.choice([hap1, hap2])
+                this_bc = add_errors(bc, 0.01)      # rare barcode errors, fixed by --rescue
+                read = this_bc + CUT + add_errors(genomic, ERR)
+                qual = "".join(random.choice("FFFFF:,") for _ in read)
+                read_id += 1
+                fq.write(f"@SIM:1:FC546:1:1101:{read_id}:1 1:N:0:1\n{read}\n+\n{qual}\n")
+
+# --- Barcode file, population map, and true SNPs -------------------------
+with open(f"{demo_dir}/barcodes.tsv", "w") as f:
+    for s in samples:
+        f.write(f"{sample_bc[s]}\t{s}\n")
+
+with open(f"{demo_dir}/popmap.tsv", "w") as f:
+    for s in samples:
+        f.write(f"{s}\t{sample_pop[s]}\n")
+
+with open(f"{demo_dir}/truth_snps.tsv", "w") as f:
+    f.write("locus\tpos\tref\talt\tfreq_PB\tfreq_SJ\ttype\n")
+    for row in truth:
+        f.write("\t".join(map(str, row)) + "\n")
+
+print(f"Wrote {read_id:,} reads for {len(samples)} plants at {N_LOCI} loci "
+      f"({len(truth)} SNPs, {sum(r[6] == 'outlier' for r in truth)} outliers)")
+```
+
+## Look at the simulated data
+
+This chunk checks the files from the simulation. It shows the first two reads (so you can see the barcode, then `TGCAGG`, then the genomic sequence), counts the reads (a FASTQ record is 4 lines, so reads = lines ÷ 4), and prints the barcode file and population map. Both files are tab-separated, one plant per line.
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+
+zcat $DEMO/raw/eelgrass_demo_R1.fastq.gz | head -8
+echo "Number of reads:"
+echo $(( $(zcat $DEMO/raw/eelgrass_demo_R1.fastq.gz | wc -l) / 4 ))
+
+head -4 $DEMO/barcodes.tsv
+head -4 $DEMO/popmap.tsv
+```
+
+## Step 2: Demultiplex and clean reads with `process_radtags`
+
+`process_radtags` sorts the multiplexed reads into one file per plant and removes bad reads. Options:
+
+-   `-f`: the single-end input FASTQ file
+-   `-b`: barcode file (barcode → sample name)
+-   `-o`: output folder; one `<sample>.fq.gz` file per plant is written here
+-   `-e sbfI`: the restriction enzyme. Each read must start (after the barcode) with SbfI's leftover cut site `TGCAGG`, or it is thrown out
+-   `--inline-null`: the barcode is in the read itself ("inline"), and there is no index barcode in the header ("null"). This is the default, but writing it out makes the setup clear
+-   `-r`: rescue barcodes and cut sites that have one sequencing error instead of throwing the read away
+-   `-c`: remove reads that contain an `N`
+-   `-q`: remove reads whose quality drops too low in a sliding window
+
+`process_radtags` removes the barcode from each read, so output reads are 94 bp (cut site + 88 bp). It writes a log, `process_radtags.log`, with counts of reads kept, rescued, and removed for each barcode. The `stacks-dist-extract` script pulls the per-barcode table out of that log and prints it.
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+mkdir -p $OUT/process_radtags
+
+$STACKS/process_radtags \
+  -f $DEMO/raw/eelgrass_demo_R1.fastq.gz \
+  -b $DEMO/barcodes.tsv \
+  -o $OUT/process_radtags \
+  -e sbfI \
+  --inline-null \
+  -r -c -q
+
+$STACKS/scripts/stacks-dist-extract --pretty $OUT/process_radtags/process_radtags.log per_barcode_raw_read_counts
+ls -lh $OUT/process_radtags/*.fq.gz
+```
+
+## Step 3: Build loci in each plant with `ustacks`
+
+`ustacks` works on one plant at a time. It groups identical reads into "stacks", then merges stacks that differ by only a few bases into one **locus**. Within a locus, the different stacks are the plant's alleles. This is how Stacks finds loci without a reference genome ("de novo").
+
+Options:
+
+-   `-f`: one plant's cleaned reads
+-   `-o`: output folder (the same folder is used for every later step)
+-   `-i 1, 2, 3 ...`: a unique number for each sample; Stacks requires this
+-   `--name`: sample name; must match the name in `popmap.tsv`
+-   `-m 3`: at least 3 identical reads are needed to start a stack. Lower values keep more loci but also more sequencing errors
+-   `-M 2`: stacks that differ by up to 2 bases are merged into one locus. This is the main setting to tune on real data (Paris et al. 2017 suggest testing values from 1 to about 8)
+-   `-t`: number of threads
+
+Each plant gets three output files: `<sample>.tags.tsv.gz` (the loci), `<sample>.snps.tsv.gz` (base-by-base calls), and `<sample>.alleles.tsv.gz` (alleles).
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+mkdir -p $OUT/stacks
+
+id=1
+while IFS=$'\t' read -r sample pop; do
+  $STACKS/ustacks \
+    -f $OUT/process_radtags/${sample}.fq.gz \
+    -o $OUT/stacks \
+    -i $id \
+    --name $sample \
+    -m 3 -M 2 \
+    -t $THREADS
+  id=$((id + 1))
+done < $DEMO/popmap.tsv
+
+ls $OUT/stacks | head
+```
+
+## Step 4: Build the catalog with `cstacks`
+
+`cstacks` merges the loci from all 20 plants into one **catalog**, a single list of every locus found in the dataset. A locus from one plant is matched to a catalog locus if the sequences differ by `-n` bases or fewer. Stacks recommends using the same value as `ustacks -M`, so here `-n 2`.
+
+-   `-P`: the folder with the `ustacks` output
+-   `-M`: population map; this tells `cstacks` which samples to use
+
+With real data you can build the catalog from a subset of samples (for example those with the most reads) to save time. Here all 20 plants are used.
+
+The output is `catalog.tags.tsv.gz`, `catalog.snps.tsv.gz`, and `catalog.alleles.tsv.gz`.
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+
+$STACKS/cstacks \
+  -P $OUT/stacks \
+  -M $DEMO/popmap.tsv \
+  -n 2 \
+  -t $THREADS
+```
+
+## Step 5: Match each plant to the catalog with `sstacks`
+
+`sstacks` takes each plant's loci and finds the matching catalog locus. This shows which catalog loci each plant has and which alleles it carries. It writes one `<sample>.matches.tsv.gz` file per plant.
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+
+$STACKS/sstacks \
+  -P $OUT/stacks \
+  -M $DEMO/popmap.tsv \
+  -t $THREADS
+```
+
+## Step 6: Reorganize by locus with `tsv2bam`
+
+Up to here the data are stored by sample. To call genotypes, Stacks needs to look at all plants' reads for one locus at the same time. `tsv2bam` rearranges the data so it is stored by catalog locus, and writes one `<sample>.matches.bam` file per plant.
+
+With paired-end data, `-R` would point to the read 2 files, so that `gstacks` could build longer loci. This demo is single-end, so `-R` is not used.
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+
+$STACKS/tsv2bam \
+  -P $OUT/stacks \
+  -M $DEMO/popmap.tsv \
+  -t $THREADS
+```
+
+## Step 7: Call SNPs and genotypes with `gstacks`
+
+`gstacks` looks at every catalog locus across all plants and uses a statistical model to call SNPs and each plant's genotype. It writes:
+
+-   `catalog.fa.gz`: consensus sequence of each locus
+-   `catalog.calls`: SNP and genotype calls (`populations` reads this file in the next step)
+-   `gstacks.log` and `gstacks.log.distribs`: summary statistics, such as average coverage per sample
+
+The `stacks-dist-extract` script (in the Stacks `scripts/` folder) pulls one table out of the `.distribs` file. Here it shows the effective coverage for each plant. Low coverage in a plant usually means more missing genotypes for that plant.
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+
+$STACKS/gstacks \
+  -P $OUT/stacks \
+  -M $DEMO/popmap.tsv \
+  -t $THREADS
+
+tail -5 $OUT/stacks/gstacks.log
+$STACKS/scripts/stacks-dist-extract $OUT/stacks/gstacks.log.distribs effective_coverages_per_sample
+```
+
+## Step 8: Population statistics and export with `populations`
+
+`populations` uses the `gstacks` calls and the population map to filter loci, compute population genetic statistics, and write the data in formats other programs can read.
+
+Filters:
+
+-   `-p 2`: keep a locus only if it is found in both populations
+-   `-r 0.8`: in each population, a locus must be genotyped in at least 80% of plants (8 of 10)
+-   `--min-maf 0.05`: drop SNPs where the less common allele has a frequency below 5% (these are often sequencing errors)
+-   `--write-single-snp`: keep only the first SNP in each locus. SNPs in the same 94 bp locus are tightly linked, and many analyses (e.g. STRUCTURE) assume SNPs are independent
+
+Statistics and output:
+
+-   `--fstats`: compute F~ST~ between PB and SJ for each SNP and each locus (plus Φ~ST~ from haplotypes)
+-   `--vcf`: SNP genotypes in VCF format (for R packages such as `vcfR`/`adegenet`, and many other programs)
+-   `--genepop`, `--structure`: input files for GenePop and STRUCTURE
+
+Main output files (in `$OUT/populations/`):
+
+-   `populations.sumstats_summary.tsv`: per-population summary (heterozygosity, π, F~IS~)
+-   `populations.fst_summary.tsv`: average F~ST~ between PB and SJ
+-   `populations.fst_PB-SJ.tsv`: F~ST~ for each SNP
+-   `populations.snps.vcf`, `populations.snps.genepop`, `populations.structure`
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+mkdir -p $OUT/populations
+
+$STACKS/populations \
+  -P $OUT/stacks \
+  -O $OUT/populations \
+  -M $DEMO/popmap.tsv \
+  -p 2 -r 0.8 \
+  --min-maf 0.05 \
+  --write-single-snp \
+  --fstats \
+  --vcf --genepop --structure \
+  -t $THREADS
+
+ls -lh $OUT/populations
+```
+
+## Look at the results
+
+This chunk prints the two summary tables. In the simulation most SNPs have similar frequencies in PB and SJ, so expect an average F~ST~ that is low (about 0.05–0.1; the outlier SNPs pull it up a little). Expect diversity statistics (π, heterozygosity) to be about the same in the two populations, because they were simulated the same way.
+
+The summary files start with comment lines that begin with `#`. The `grep -v` removes the extra ones so the tables are easier to read.
+
+```{bash}
+source ../output/04-stacks-demo/stacks-demo.env
+
+echo "== Per-population summary (variant sites only)"
+grep -v "^# All positions" $OUT/populations/populations.sumstats_summary.tsv | head -4
+
+echo "== Average Fst between populations"
+cat $OUT/populations/populations.fst_summary.tsv
+```
+
+## Find the most differentiated loci
+
+This R chunk reads the per-SNP F~ST~ table and plots the F~ST~ values as a histogram. If the pipeline worked, most SNPs should be near 0, and a small group (the simulated "outlier" SNPs, about 10% of the total) should have high F~ST~, around 0.5 or higher. The table then lists the 10 SNPs with the highest F~ST~.
+
+`populations` starts the file with a `#` before the column names, so the chunk reads the header and data separately: it takes column names from the first line (removing the `#` and making them valid R names) and then reads the data below it.
+
+To check against the simulation: the Stacks locus numbers do not match the simulated locus numbers, but the number of high-F~ST~ SNPs should be close to the number of `outlier` rows in `truth_snps.tsv`.
+
+```{r}
+library(readr)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(ggplot2)
+
+fst_file <- "../output/04-stacks-demo/populations/populations.fst_PB-SJ.tsv"
+
+header <- readLines(fst_file, n = 1) |>
+  str_remove("^# ") |>
+  str_split("\t") |>
+  pluck(1) |>
+  make.names()
+
+fst <- read_tsv(fst_file, comment = "#", col_names = header, show_col_types = FALSE)
+
+ggplot(fst, aes(x = AMOVA.Fst)) +
+  geom_histogram(binwidth = 0.025, fill = "darkgreen") +
+  labs(x = "Per-SNP Fst (PB vs SJ)", y = "Number of SNPs",
+       title = "Simulated eelgrass populations: Fst distribution") +
+  theme_minimal()
+
+fst |>
+  arrange(desc(AMOVA.Fst)) |>
+  select(Locus.ID, BP, Pop.1.ID, Pop.2.ID, AMOVA.Fst) |>
+  head(10)
+
+truth <- read_tsv("../data/stacks-demo/truth_snps.tsv", show_col_types = FALSE)
+count(truth, type)
+```
+
+## Next steps with real data
+
+-   **Tune `-M` and `-n`.** Run Steps 3--8 several times with `-M` (and `-n`) from 1 to about 8. Pick the value after which the number of polymorphic loci found in 80% of samples stops going up (the "r80" method; Paris et al. 2017).
+-   **Check each sample.** Look at the `process_radtags` log and the `gstacks` coverage table. Remove plants with very few reads or very low coverage before running `populations`.
+-   **Clones.** Eelgrass spreads by clonal growth, so two samples from one meadow can be the same genet. Check for (and remove) clones, for example by finding pairs of samples with nearly identical genotypes, before computing population statistics.
+-   **Use a reference genome.** *Zostera marina* has a reference genome. With real data you could align reads to it (e.g. with `bwa mem`) and run `gstacks -I`, then `populations`, instead of building loci de novo.
