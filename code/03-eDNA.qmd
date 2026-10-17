@@ -331,16 +331,19 @@ done
 
 ## Assign taxonomy
 
-The next chunks build a reference classifier for each marker and use it to assign a taxonomy to every ASV. A classifier is trained on reference sequences of known taxonomy. QIIME 2's naive Bayes classifier learns which short DNA "words" (k-mers) go with which taxa, then uses them to predict the taxonomy of each ASV, with a confidence score.
+The next chunks name the organism behind each ASV by comparing it to a reference database of sequences from known taxa. Each marker uses a different database, and a different method:
 
-The classifier is trained only on the part of each reference sequence between our PCR primers, the same region our ASVs cover. This is more accurate than training on full-length reference sequences.
-
-| Marker | Reference database | Why |
+| Marker | Reference database | Method |
 |----|----|----|
-| 18S V9 | PR2 version 5.1.1 | Curated 18S database focused on protists and other eukaryotes |
-| COI | MIDORI2 GB273, CO1 "uniq" | Curated mitochondrial sequences from GenBank, with every unique sequence kept for each species |
+| 18S V9 | PR2 version 5.1.1, a curated 18S database focused on protists and other eukaryotes | Naive Bayes classifier (`classify-sklearn`) |
+| COI | MIDORI2 GB273 CO1 "uniq", curated mitochondrial sequences from GenBank with every unique sequence kept for each species | Direct matching with vsearch (`classify-consensus-vsearch`), at least 97% identity |
 
-Reference files and classifiers go to `../data/qiime2/reference`, separate from the sample data, since they can be reused for other projects.
+-   **Naive Bayes classifier.** It is trained on the reference sequences and learns which short DNA "words" (k-mers) go with which taxa. It then predicts each ASV's taxonomy and gives a confidence score for each rank. If confidence at a rank is below 70%, the ASV is only named to the rank above.
+-   **vsearch.** It aligns each ASV to the reference sequences and finds the closest matches. The ASV gets the taxonomy those best matches agree on. If no reference is at least 97% identical, the ASV is "Unassigned".
+
+**Why COI uses vsearch at 97%.** We first ran vsearch at 90% identity. That named 82% of COI reads, but the top "hits" were tropical butterflies, beetles, a squirrel, goat and human, in every sample. None of those ASVs matched any reference at 99% or more, and the median match was 94%. They were unknown sequences given the name of whatever happened to be closest, not real detections. At 97% identity, the named taxa are local marine species, such as *Glycera*, *Euphausia pacifica*, *Littorina scutulata*, *Halichondria* and *Centropages*, which match at 99–100%. The catch is that only about 5% of COI reads get a name. That is common for Leray COI in marine eDNA: the primers also amplify many organisms, such as protists and other microbes, that are poorly represented in the reference database. We also tried training a naive Bayes classifier on MIDORI2 COI, but it was still running after more than 2 hours, using 45 GB of memory, so we stopped it.
+
+For both markers, the reference sequences are first cut to the region between our PCR primers, the same region our ASVs cover. Reference files go to `../data/qiime2/reference`, separate from the sample data, since they can be reused for other projects.
 
 ### Build the 18S V9 classifier (PR2)
 
@@ -378,4 +381,157 @@ qiime feature-classifier fit-classifier-naive-bayes \
   --i-reference-reads ${refdir}/pr2-v9-seqs.qza \
   --i-reference-taxonomy ${refdir}/pr2-tax.qza \
   --o-classifier ${refdir}/pr2-v9-classifier.qza
+```
+
+### Build the COI reference (MIDORI2)
+
+RESCRIPt has a `get-midori2-data` command, but it doesn't work any more: MIDORI2 moved its files to Zenodo (<https://doi.org/10.5281/zenodo.22685700>), so RESCRIPt's download address gives a "404 Not Found" error. This chunk downloads the files from Zenodo instead.
+
+1.  Downloads `MIDORI2_GB273_QIIME.zip` (433 MB, QIIME-format files for all mitochondrial genes, built from GenBank release 273) and the release's checksum list
+2.  Unzips only the CO1 "uniq" files, then checks them against the checksums with `sha256sum -c`. Both lines should end in `OK`
+3.  Imports the sequences (1.86 million) and taxonomy into QIIME 2. `HeaderlessTSVTaxonomyFormat` means the taxonomy file is two columns (ID, taxonomy) with no header line
+4.  Cuts out the Leray region with `extract-reads`, using the COI primers. `--p-min-length 250` and `--p-max-length 400` keep pieces close to the 313 bp amplicon. This keeps about 554,000 sequences. Most are 313 bp; many vertebrate references are 259 bp, because their GenBank records cover only part of the region. They are kept, since they are still useful for matching fish and other vertebrates
+5.  Merges identical sequences with `qiime rescript dereplicate`, leaving about 323,000. In `--p-mode uniq`, identical sequences with different taxonomies are kept apart, so no information is lost, and the vsearch search is faster
+
+On this server, `extract-reads` takes about 18 minutes; the other steps take a few minutes each.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+refdir=../data/qiime2/reference
+mkdir -p ${refdir}/midori2
+cd ${refdir}/midori2
+
+curl -L -o MIDORI2_GB273_QIIME.zip \
+  "https://zenodo.org/api/records/22685701/files/MIDORI2_GB273_QIIME.zip/content"
+curl -L -o release_sha256.txt \
+  "https://zenodo.org/api/records/22685701/files/release_sha256.txt/content"
+
+unzip -o MIDORI2_GB273_QIIME.zip 'QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.*'
+grep 'QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME' release_sha256.txt | sha256sum -c -
+
+gunzip -c QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.fasta.gz > midori2-co1.fasta
+gunzip -c QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.taxon.gz > midori2-co1-tax.tsv
+
+qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path midori2-co1.fasta \
+  --output-path midori2-co1-seqs.qza
+
+qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path midori2-co1-tax.tsv \
+  --output-path midori2-co1-tax.qza
+
+qiime feature-classifier extract-reads \
+  --i-sequences midori2-co1-seqs.qza \
+  --p-f-primer GGWACWGGWTGAACWGTWTAYCCYCC \
+  --p-r-primer TANACYTCNGGRTGNCCRAARAAYCA \
+  --p-min-length 250 \
+  --p-max-length 400 \
+  --p-n-jobs 32 \
+  --o-reads midori2-co1-leray-seqs.qza \
+  --o-read-extraction-stats midori2-co1-leray-extraction-stats.qza
+
+qiime rescript dereplicate \
+  --i-sequences midori2-co1-leray-seqs.qza \
+  --i-taxa midori2-co1-tax.qza \
+  --p-mode uniq \
+  --p-threads 16 \
+  --o-dereplicated-sequences ../midori2-co1-leray-seqs.qza \
+  --o-dereplicated-taxa ../midori2-co1-leray-tax.qza
+```
+
+### Make the sample metadata file
+
+QIIME 2 uses a sample metadata file to group samples in plots. This chunk writes `metadata.tsv` from both markers' manifests (`sort -u` lists each sample once). It has the sample ID and the site (`Site1` or `Site5`, the first 5 letters of the sample ID). You can add more columns later, such as date, depth or replicate.
+
+```{bash}
+outdir=../data/qiime2/eDNA-yellow_island-2023
+
+printf "sample-id\tsite\n" > ${outdir}/metadata.tsv
+tail -q -n +2 ${outdir}/V9/manifest.tsv ${outdir}/COI/manifest.tsv | cut -f1 | sort -u \
+  | awk '{print $1 "\t" substr($1, 1, 5)}' >> ${outdir}/metadata.tsv
+```
+
+### Classify 18S V9
+
+This chunk:
+
+1.  Assigns a taxonomy to each V9 ASV with the PR2 classifier (`classify-sklearn`)
+2.  Makes `taxonomy.qzv`, a table of each ASV's taxonomy and confidence (`qiime metadata tabulate`)
+3.  Makes `taxa-barplot.qzv`, showing what share of each sample's reads came from each taxon (`qiime taxa barplot`). In the viewer you can pick the taxonomic level and sort samples by site
+
+PR2 names use the ranks `d__` (domain), `sgr__` (supergroup), `dv__` (division), `dvs__` (subdivision), then class, order, family, genus and species. Over all samples, the most common groups were animals (37% of reads, mostly copepods such as *Pseudocalanus* and *Paracalanus*), Gyrista (33%, mostly diatoms), ciliates (12%) and dinoflagellates (5%). Treat species names with care: the V9 region is short, so the classifier sometimes picks a close relative. For example, *Sinocalanus sinensis* is an Asian estuarine copepod, probably standing in for a related local species.
+
+Classifying took about 1.5 minutes.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023
+refdir=../data/qiime2/reference
+
+qiime feature-classifier classify-sklearn \
+  --i-classifier ${refdir}/pr2-v9-classifier.qza \
+  --i-reads ${outdir}/V9/rep-seqs.qza \
+  --p-n-jobs 8 \
+  --o-classification ${outdir}/V9/taxonomy.qza
+
+qiime metadata tabulate \
+  --m-input-file ${outdir}/V9/taxonomy.qza \
+  --o-visualization ${outdir}/V9/taxonomy.qzv
+
+qiime taxa barplot \
+  --i-table ${outdir}/V9/table.qza \
+  --i-taxonomy ${outdir}/V9/taxonomy.qza \
+  --m-metadata-file ${outdir}/metadata.tsv \
+  --o-visualization ${outdir}/V9/taxa-barplot.qzv
+```
+
+### Classify COI
+
+This chunk matches each COI ASV against the MIDORI2 reference with vsearch, then makes the same table and bar plot as for 18S V9.
+
+-   `--p-perc-identity 0.97`: a reference must be at least 97% identical to the ASV to count as a match (see "Why COI uses vsearch at 97%" above)
+-   `--p-query-cov 0.8`: the match must cover at least 80% of the ASV
+-   `--p-maxaccepts 10 --p-top-hits-only`: collect up to 10 matches, and use only those tied for the best identity. The ASV is named to the deepest rank that more than half of them agree on (`--p-min-consensus`, default 0.51)
+-   `--o-search-results`: also saves the matches themselves (`vsearch-hits.qza`), so you can check the identity of each ASV's best match
+-   `--p-threads 32`: use 32 threads
+
+MIDORI2 names use the ranks `k__` (kingdom), `p__` (phylum), `c__`, `o__`, `f__`, `g__` and `s__`, with an NCBI taxonomy ID at the end of each name (e.g. `s__Euphausia pacifica_102976`). A few ASVs still match human DNA, which is normal low-level contamination from handling samples. A few others match land mammals, such as a hamster (*Nothocricetulus*), at 97% or more. Check these in `vsearch-hits.qza` before trusting them.
+
+On this server, classifying the 6,238 COI ASVs takes about 53 minutes with 32 threads. It names 324 of them, which make up about 4.5% of COI reads.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023
+refdir=../data/qiime2/reference
+
+qiime feature-classifier classify-consensus-vsearch \
+  --i-query ${outdir}/COI/rep-seqs.qza \
+  --i-reference-reads ${refdir}/midori2-co1-leray-seqs.qza \
+  --i-reference-taxonomy ${refdir}/midori2-co1-leray-tax.qza \
+  --p-perc-identity 0.97 \
+  --p-query-cov 0.8 \
+  --p-maxaccepts 10 \
+  --p-top-hits-only \
+  --p-threads 32 \
+  --o-classification ${outdir}/COI/taxonomy.qza \
+  --o-search-results ${outdir}/COI/vsearch-hits.qza
+
+qiime metadata tabulate \
+  --m-input-file ${outdir}/COI/taxonomy.qza \
+  --o-visualization ${outdir}/COI/taxonomy.qzv
+
+qiime taxa barplot \
+  --i-table ${outdir}/COI/table.qza \
+  --i-taxonomy ${outdir}/COI/taxonomy.qza \
+  --m-metadata-file ${outdir}/metadata.tsv \
+  --o-visualization ${outdir}/COI/taxa-barplot.qzv
 ```

@@ -33,5 +33,5 @@ data/qiime2/reference/
 output/03.1-eDNA/*demux.qza
 data/reference/
 
-# Large QIIME 2 read artifacts (regenerate from code/03.2-eDNA.qmd)
-output/03.2-eDNA/*demux.qza
+# Large QIIME 2 read artifacts (regenerate from the code/03.x-eDNA.qmd pages)
+output/**/*demux.qza
