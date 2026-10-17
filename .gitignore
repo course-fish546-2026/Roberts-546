@@ -28,3 +28,7 @@ data/trimmed-qc/**/*.fastq.gz
 Rplots.pdf
 data/qiime2/**/demux.qza
 data/qiime2/reference/
+
+# 03.1-eDNA: imported reads and reference databases (large; regenerate from code/03.1-eDNA.qmd)
+output/03.1-eDNA/*demux.qza
+data/reference/

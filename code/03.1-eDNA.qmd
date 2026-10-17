@@ -312,7 +312,50 @@ qiime tools import \
 
 ## 7. Assign taxonomy
 
-TAXONOMY_TEXT
+Each ASV is compared to the reference database with `vsearch`. For each ASV, vsearch finds up to 10 reference sequences that are at least a set percent identical. The ASV gets the part of their names that most of them agree on (a "consensus"). For example, if the hits are all copepods but different species, the ASV is named only down to "Copepoda". ASVs with no good hits are labeled `Unassigned`.
+
+-   `--p-perc-identity`: how similar a reference must be to count as a hit. 18S V9 uses 0.9 (90%). COI uses 0.8 (80%), because many marine invertebrates have no COI sequence in GenBank. In a test, 90% left about 80% of COI reads unassigned, while 80% left about 33% unassigned
+-   `--p-maxrejects 100`: stop searching after 100 references that don't match. Without this, vsearch checks every reference sequence, which is several times slower with almost the same result
+-   `--p-threads 16`: use 16 CPU cores
+-   Outputs: `*-taxonomy.qza` (the name for each ASV) and `*-vsearch-hits.qza` (the reference hits each name is based on)
+
+**18S V9:**
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime feature-classifier classify-consensus-vsearch \
+  --i-query V9-rep-seqs.qza \
+  --i-reference-reads ../../data/reference/pr2-seqs.qza \
+  --i-reference-taxonomy ../../data/reference/pr2-taxonomy.qza \
+  --p-perc-identity 0.9 \
+  --p-maxrejects 100 \
+  --p-threads 16 \
+  --o-classification V9-taxonomy.qza \
+  --o-search-results V9-vsearch-hits.qza
+```
+
+**COI:**
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime feature-classifier classify-consensus-vsearch \
+  --i-query COI-rep-seqs.qza \
+  --i-reference-reads ../../data/reference/midori2-CO1-seqs.qza \
+  --i-reference-taxonomy ../../data/reference/midori2-CO1-taxonomy.qza \
+  --p-perc-identity 0.8 \
+  --p-maxrejects 100 \
+  --p-threads 16 \
+  --o-classification COI-taxonomy.qza \
+  --o-search-results COI-vsearch-hits.qza
+```
+
+Treat names below the family level with caution, especially for COI at 80% identity: a hit at that level means "related to", not "the same species".
 
 ## 8. Make bar plots
 
