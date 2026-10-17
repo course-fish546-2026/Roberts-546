@@ -1,6 +1,8 @@
 ---
 title: "03-eDNA"
 editor: visual
+execute:
+  eval: false
 ---
 
 ## About these libraries
@@ -189,5 +191,140 @@ for marker in V9 COI; do
     -o ${outdir}/${marker}/multiqc \
     -n ${marker}_multiqc_report.html \
     -f
+done
+```
+
+## Denoise reads into ASVs with QIIME 2
+
+The next chunks use QIIME 2 (`qiime2-2026.7` conda environment) to turn the quality-trimmed reads into amplicon sequence variants (ASVs): exact DNA sequences, each with a count of how many reads it has in each sample. Each marker is run separately, because 18S V9 and COI are different genes and are classified against different reference databases later.
+
+QIIME 2 only works when its conda environment is active, so each chunk starts by activating it. Quarto runs every chunk in a new shell, so the environment has to be activated again in each one.
+
+All QIIME 2 files go to `../data/qiime2/eDNA-yellow_island-2023/V9` and `.../COI`. QIIME 2 saves data as `.qza` files and viewable reports as `.qzv` files. To look at a `.qzv`, drag it onto <https://view.qiime2.org>.
+
+### Make a manifest and import the reads
+
+A manifest is a table that tells QIIME 2 which files belong to which sample. This chunk makes one for each marker: a tab-separated file with the sample ID (the file name without `Yell_July18_`) and the full paths to that sample's R1 and R2 files. `realpath` turns each path into a full path, since QIIME 2 requires full paths in the manifest.
+
+The chunk then imports the reads into QIIME 2 (`demux.qza`) and makes a summary (`demux.qzv`) with the number of reads per sample and quality plots for R1 and R2.
+
+-   `--type 'SampleData[PairedEndSequencesWithQuality]'`: the reads are paired-end, with quality scores, already split by sample
+-   `--input-format PairedEndFastqManifestPhred33V2`: the input is a tab-separated manifest, and quality scores use the standard Illumina (Phred+33) encoding
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+indir=../data/trimmed-qc/eDNA-yellow_island-2023
+outdir=../data/qiime2/eDNA-yellow_island-2023
+
+for marker in V9 COI; do
+  mkdir -p ${outdir}/${marker}
+  manifest=${outdir}/${marker}/manifest.tsv
+
+  printf "sample-id\tforward-absolute-filepath\treverse-absolute-filepath\n" > ${manifest}
+
+  for r1 in ${indir}/${marker}/*_R1_trimmed.fastq.gz; do
+    r2=${r1/_R1_trimmed/_R2_trimmed}
+    sample=$(basename "$r1" _R1_trimmed.fastq.gz)
+    sample=${sample#Yell_July18_}
+    printf "%s\t%s\t%s\n" "$sample" "$(realpath "$r1")" "$(realpath "$r2")" >> ${manifest}
+  done
+
+  qiime tools import \
+    --type 'SampleData[PairedEndSequencesWithQuality]' \
+    --input-path ${manifest} \
+    --input-format PairedEndFastqManifestPhred33V2 \
+    --output-path ${outdir}/${marker}/demux.qza
+
+  qiime demux summarize \
+    --i-data ${outdir}/${marker}/demux.qza \
+    --o-visualization ${outdir}/${marker}/demux.qzv
+done
+```
+
+### Denoise 18S V9 with DADA2
+
+DADA2 learns the error pattern of this sequencing run and uses it to separate real sequences from sequencing errors. It then merges each R1/R2 pair into one sequence, removes chimeras (artificial sequences made from two different organisms during PCR), and counts each final sequence (ASV) in each sample.
+
+-   `--p-trunc-len-f 0 --p-trunc-len-r 0`: don't cut the reads to a fixed length. The 18S V9 amplicon (about 90–190 bp) is shorter than the reads, so the reads already cover the whole amplicon, and fastp has already removed adapters and low-quality ends
+-   `--p-n-threads 16`: use 16 threads
+-   Outputs: `table.qza` (ASV counts per sample), `rep-seqs.qza` (the sequence of each ASV), `denoising-stats.qza` (how many reads per sample passed each step) and `base-transition-stats.qza` (the error model DADA2 learned)
+
+On a test with Site1a, 92% of reads made it through all the steps, and most ASVs were about 127 bp long.
+
+This chunk can take a long time to run with all samples.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023/V9
+
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs ${outdir}/demux.qza \
+  --p-trunc-len-f 0 \
+  --p-trunc-len-r 0 \
+  --p-n-threads 16 \
+  --o-table ${outdir}/table.qza \
+  --o-representative-sequences ${outdir}/rep-seqs.qza \
+  --o-denoising-stats ${outdir}/denoising-stats.qza \
+  --o-base-transition-stats ${outdir}/base-transition-stats.qza
+```
+
+### Denoise COI with DADA2
+
+This is the same as the 18S V9 step, but here the reads are cut to fixed lengths. The COI amplicon is about 313 bp after the primers are removed. Its R1 and R2 reads only overlap at their ends, which is where quality is lowest, and on a test with Site1a, only about 60% of uncut read pairs merged. Cutting R1 to 180 bp and R2 to 160 bp removes the worst bases. That leaves an overlap of about 27 bp, enough to merge, and about 90% of the pairs that passed filtering merged.
+
+-   `--p-trunc-len-f 180`: cut R1 to 180 bp; shorter R1 reads are dropped
+-   `--p-trunc-len-r 160`: cut R2 to 160 bp; shorter R2 reads are dropped
+
+On the Site1a test, about 55% of COI reads made it through all the steps, and most ASVs were 313 bp long, the expected length. Check `denoising-stats.qzv` for all samples. If many reads are lost at the filtering step, try shorter lengths; if many are lost at the merging step, try longer ones. R1 + R2 must stay above about 330 bp so the reads still overlap.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023/COI
+
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs ${outdir}/demux.qza \
+  --p-trunc-len-f 180 \
+  --p-trunc-len-r 160 \
+  --p-n-threads 16 \
+  --o-table ${outdir}/table.qza \
+  --o-representative-sequences ${outdir}/rep-seqs.qza \
+  --o-denoising-stats ${outdir}/denoising-stats.qza \
+  --o-base-transition-stats ${outdir}/base-transition-stats.qza
+```
+
+### Summarize the DADA2 results
+
+This chunk makes three reports for each marker:
+
+-   `denoising-stats.qzv`: for each sample, how many reads were kept after filtering, denoising, merging and chimera removal. Use this to check the truncation settings and to spot samples with too few reads
+-   `table.qzv`: the number of reads and ASVs per sample and per ASV. This helps choose a sampling depth for diversity analysis later. `feature-table summarize` also saves the per-ASV and per-sample counts as `feature-frequencies.qza` and `sample-frequencies.qza`
+-   `rep-seqs.qzv`: a list of ASV sequences and their lengths. Each sequence links to an NCBI BLAST search
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023
+
+for marker in V9 COI; do
+  qiime metadata tabulate \
+    --m-input-file ${outdir}/${marker}/denoising-stats.qza \
+    --o-visualization ${outdir}/${marker}/denoising-stats.qzv
+
+  qiime feature-table summarize \
+    --i-table ${outdir}/${marker}/table.qza \
+    --o-feature-frequencies ${outdir}/${marker}/feature-frequencies.qza \
+    --o-sample-frequencies ${outdir}/${marker}/sample-frequencies.qza \
+    --o-summary ${outdir}/${marker}/table.qzv
+
+  qiime feature-table tabulate-seqs \
+    --i-data ${outdir}/${marker}/rep-seqs.qza \
+    --o-visualization ${outdir}/${marker}/rep-seqs.qzv
 done
 ```

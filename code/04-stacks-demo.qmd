@@ -5,6 +5,23 @@ execute:
   eval: false
 ---
 
+## What Stacks does
+
+[Stacks](https://catchenlab.life.illinois.edu/stacks/) (Catchen et al. 2013; Rochette et al. 2019) is a set of programs for **RAD-seq** data. RAD-seq (restriction-site associated DNA sequencing) is a cheap way to genotype many individuals at thousands of places across the genome:
+
+1.  Cut each individual's DNA with a restriction enzyme (here SbfI, which cuts at the sequence `CCTGCAGG`).
+2.  Add an adapter with a short **barcode** that identifies the individual, and pool all individuals into one library.
+3.  Sequence the DNA next to each cut site. Every individual is sequenced at roughly the same cut sites, so the same short regions of the genome (**RAD loci**) can be compared across individuals.
+
+What comes off the sequencer is a large file of short reads from all individuals mixed together. Stacks turns those reads into genotypes and population genetic results. It:
+
+-   **Demultiplexes and cleans** the reads, sorting them into one file per individual by barcode and removing low-quality reads (`process_radtags`).
+-   **Builds loci.** Reads that are identical or nearly identical are grouped into "stacks". Each group is a locus, and differences between stacks at one locus are alleles. Stacks can do this **de novo**, with no reference genome (`ustacks`, `cstacks`, `sstacks`), or by using reads already aligned to a reference genome.
+-   **Calls SNPs and genotypes** at each locus in each individual, using a statistical model that separates true heterozygotes from sequencing errors (`gstacks`).
+-   **Computes population statistics** such as allele frequencies, heterozygosity, nucleotide diversity (π), F~IS~ and F~ST~, and **exports** the genotypes in formats for other software: VCF, GenePop, STRUCTURE, PLINK and others (`populations`).
+
+Typical uses are population structure, gene flow, finding loci under selection (outlier F~ST~), genetic diversity, and building linkage maps, often in species without a reference genome.
+
 ## About this document
 
 This is a practice run of the [Stacks](https://catchenlab.life.illinois.edu/stacks/) pipeline (version 2.68, installed at `/home/shared/stacks-2.68`) on a **made-up** RAD-seq dataset. The dataset stands in for two eelgrass (*Zostera marina*) populations:
@@ -377,7 +394,7 @@ ls -lh $OUT/populations
 
 ## Look at the results
 
-This chunk prints the two summary tables. In the simulation most SNPs have similar frequencies in PB and SJ, so expect an average F~ST~ that is low (about 0.05–0.1; the outlier SNPs pull it up a little). Expect diversity statistics (π, heterozygosity) to be about the same in the two populations, because they were simulated the same way.
+This chunk prints the two summary tables. In the simulation most SNPs have similar frequencies in PB and SJ, so expect an average F~ST~ that is low (about 0.05--0.1; the outlier SNPs pull it up a little). Expect diversity statistics (π, heterozygosity) to be about the same in the two populations, because they were simulated the same way.
 
 The summary files start with comment lines that begin with `#`. The `grep -v` removes the extra ones so the tables are easier to read.
 

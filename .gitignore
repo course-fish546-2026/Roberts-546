@@ -22,6 +22,8 @@ data/trimmed/**/*.fastq.gz
 data/primer-trimmed/**/*.fastq.gz
 data/trimmed-qc/**/*.fastq.gz
 **/multiqc_data/
+**/*_multiqc_report_data/
 
 # Stray R graphics device output
 Rplots.pdf
+data/qiime2/**/demux.qza
