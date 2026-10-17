@@ -3050,6 +3050,13 @@ vertical-align: -.125em;
   <li><a href="#download-reference-databases" id="toc-download-reference-databases" class="nav-link" data-scroll-target="#download-reference-databases">6. Download reference databases</a></li>
   <li><a href="#assign-taxonomy" id="toc-assign-taxonomy" class="nav-link" data-scroll-target="#assign-taxonomy">7. Assign taxonomy</a></li>
   <li><a href="#make-bar-plots" id="toc-make-bar-plots" class="nav-link" data-scroll-target="#make-bar-plots">8. Make bar plots</a></li>
+  <li><a href="#compare-diversity-between-sites" id="toc-compare-diversity-between-sites" class="nav-link" data-scroll-target="#compare-diversity-between-sites">9. Compare diversity between sites</a>
+  <ul class="collapse">
+  <li><a href="#remove-reads-that-couldnt-be-named" id="toc-remove-reads-that-couldnt-be-named" class="nav-link" data-scroll-target="#remove-reads-that-couldnt-be-named">Remove reads that couldn’t be named</a></li>
+  <li><a href="#choose-a-rarefaction-depth" id="toc-choose-a-rarefaction-depth" class="nav-link" data-scroll-target="#choose-a-rarefaction-depth">Choose a rarefaction depth</a></li>
+  <li><a href="#calculate-diversity" id="toc-calculate-diversity" class="nav-link" data-scroll-target="#calculate-diversity">Calculate diversity</a></li>
+  <li><a href="#test-for-differences-between-sites" id="toc-test-for-differences-between-sites" class="nav-link" data-scroll-target="#test-for-differences-between-sites">Test for differences between sites</a></li>
+  </ul></li>
   <li><a href="#glossary" id="toc-glossary" class="nav-link" data-scroll-target="#glossary">Glossary</a></li>
   </ul>
 </nav>
@@ -3120,6 +3127,7 @@ vertical-align: -.125em;
 <li>Download reference databases</li>
 <li>Assign taxonomy to each ASV</li>
 <li>Make bar plots</li>
+<li>Compare diversity between sites</li>
 </ol>
 <p>Almost everything after the download runs in <strong>QIIME 2</strong>, a widely used program for amplicon (barcode) data.</p>
 <p><strong>How to run it.</strong> Run the chunks in order, from top to bottom. All paths are relative to the <code>code/</code> folder. Results go to <code>../output/03.1-eDNA/</code>.</p>
@@ -3409,16 +3417,207 @@ for marker in V9 COI; do
     --o-visualization ${marker}-taxa-barplot.qzv
 done</code></pre>
 </section>
+<section id="compare-diversity-between-sites" class="level2">
+<h2 class="anchored" data-anchor-id="compare-diversity-between-sites">9. Compare diversity between sites</h2>
+<p>This step asks two questions for each marker:</p>
+<ul>
+<li><strong>Alpha diversity:</strong> does one site have more kinds of organisms per sample than the other?</li>
+<li><strong>Beta diversity:</strong> are the communities at the two sites different in which organisms they contain?</li>
+</ul>
+<section id="remove-reads-that-couldnt-be-named" class="level3">
+<h3 class="anchored" data-anchor-id="remove-reads-that-couldnt-be-named">Remove reads that couldn’t be named</h3>
+<p>Reads from ASVs labeled <code>Unassigned</code> (and, for 18S, reads from bacteria, which the 18S primers sometimes pick up) are removed first, so the comparison is about eukaryotes we could identify.</p>
+<ul>
+<li><code>--p-include &quot;d__Eukaryota&quot;</code>: for 18S V9, keep only ASVs whose name contains <code>d__Eukaryota</code> (PR2’s label for eukaryotes)</li>
+<li><code>--p-exclude &quot;Unassigned&quot;</code>: for COI, remove ASVs labeled <code>Unassigned</code></li>
+</ul>
+<p>The <code>summarize</code> command then shows how many reads each sample has left, which is needed for the next step.</p>
+<pre class="{bash}"><code>source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime taxa filter-table \
+  --i-table V9-table.qza \
+  --i-taxonomy V9-taxonomy.qza \
+  --p-include &quot;d__Eukaryota&quot; \
+  --o-filtered-table V9-table-filtered.qza
+
+qiime taxa filter-table \
+  --i-table COI-table.qza \
+  --i-taxonomy COI-taxonomy.qza \
+  --p-exclude &quot;Unassigned&quot; \
+  --o-filtered-table COI-table-filtered.qza
+
+for marker in V9 COI; do
+  qiime feature-table summarize \
+    --i-table ${marker}-table-filtered.qza \
+    --m-metadata-file sample-metadata.tsv \
+    --o-feature-frequencies ${marker}-filtered-feature-frequencies.qza \
+    --o-sample-frequencies ${marker}-filtered-sample-frequencies.qza \
+    --o-summary ${marker}-table-filtered.qzv
+done</code></pre>
+<p>COI has many diatom reads (about a third in this data set), because the Leray primers also amplify diatoms. To study only animals, you could also filter the COI table to animal phyla (e.g. <code>--p-include &quot;p__Arthropoda,p__Annelida,p__Mollusca,p__Cnidaria&quot;</code>).</p>
+</section>
+<section id="choose-a-rarefaction-depth" class="level3">
+<h3 class="anchored" data-anchor-id="choose-a-rarefaction-depth">Choose a rarefaction depth</h3>
+<p>Samples have very different numbers of reads, and a sample with more reads will show more ASVs just because more of it was sampled. <strong>Rarefaction</strong> fixes this by randomly subsampling every sample down to the same number of reads (the <strong>sampling depth</strong>). Samples with fewer reads than the depth are left out.</p>
+<p>Choosing the depth is a trade-off: a higher depth captures more of each community but drops more samples. Rarefaction curves help. They show how many ASVs are found as more reads are sampled; where a curve levels off, extra reads add few new ASVs.</p>
+<ul>
+<li><code>--p-max-depth</code>: the largest depth to plot. Choose about the read count of a typical sample (see <code>*-table-filtered.qzv</code>)</li>
+<li><code>--p-metrics observed_features</code>: plot the number of ASVs</li>
+</ul>
+<pre class="{bash}"><code>source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime diversity alpha-rarefaction \
+  --i-table V9-table-filtered.qza \
+  --p-max-depth 30000 \
+  --p-metrics observed_features \
+  --m-metadata-file sample-metadata.tsv \
+  --o-visualization V9-alpha-rarefaction.qzv
+
+qiime diversity alpha-rarefaction \
+  --i-table COI-table-filtered.qza \
+  --p-max-depth 6000 \
+  --p-metrics observed_features \
+  --m-metadata-file sample-metadata.tsv \
+  --o-visualization COI-alpha-rarefaction.qzv</code></pre>
+<p>The depths used here:</p>
+<ul>
+<li><strong>18S V9: 15,000 reads.</strong> The curves are close to level by this depth. Five samples have fewer reads and are left out (<code>Site5g</code>, <code>Site1J</code>, <code>Site1U</code>, <code>Site5q</code>, <code>Site5f</code>; most of their reads were COI), leaving 46 samples (25 from Site 1, 21 from Site 5)</li>
+<li><strong>COI: 2,000 reads.</strong> Three samples have fewer reads and are left out (<code>Site5h</code>, <code>Site5f</code>, <code>Site1f</code>; most of their reads were 18S), leaving 49 samples (27 from Site 1, 22 from Site 5). The COI curves are still rising at 2,000, so richness is underestimated. Comparisons between sites are still fair, since every sample is subsampled to the same depth. A higher depth would drop more samples</li>
+</ul>
+<p>If you rerun this with new data, check the two <code>.qzv</code> files and change the depths in the next chunk.</p>
+</section>
+<section id="calculate-diversity" class="level3">
+<h3 class="anchored" data-anchor-id="calculate-diversity">Calculate diversity</h3>
+<p><code>core-metrics</code> rarefies the table to the sampling depth and calculates the standard diversity measures in one step. All results go into one folder per marker (<code>--output-dir</code>).</p>
+<ul>
+<li><strong>Alpha diversity</strong> (one number per sample): <code>observed_features</code> (number of ASVs), <code>shannon</code> (combines the number of ASVs and how evenly reads are spread among them) and <code>evenness</code></li>
+<li><strong>Beta diversity</strong> (one number per pair of samples, saved as a distance matrix): <code>bray_curtis</code> (differences in which ASVs are present <em>and</em> how abundant they are) and <code>jaccard</code> (only which ASVs are present)</li>
+<li><strong>PCoA plots</strong> (<code>*_emperor.qzv</code>): a 3D plot where each point is a sample, and samples with similar communities are close together. Color the points by <code>site</code> in the viewer</li>
+<li><code>--p-random-seed 42</code>: rarefaction subsamples at random; fixing the seed makes the result the same every time the chunk is run</li>
+</ul>
+<pre class="{bash}"><code>source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+qiime diversity core-metrics \
+  --i-table V9-table-filtered.qza \
+  --p-sampling-depth 15000 \
+  --m-metadata-file sample-metadata.tsv \
+  --p-random-seed 42 \
+  --output-dir V9-core-metrics
+
+qiime diversity core-metrics \
+  --i-table COI-table-filtered.qza \
+  --p-sampling-depth 2000 \
+  --m-metadata-file sample-metadata.tsv \
+  --p-random-seed 42 \
+  --output-dir COI-core-metrics</code></pre>
+<p><code>--output-dir</code> stops with an error if the folder already exists. To rerun this chunk, delete the <code>V9-core-metrics</code> and <code>COI-core-metrics</code> folders first.</p>
+</section>
+<section id="test-for-differences-between-sites" class="level3">
+<h3 class="anchored" data-anchor-id="test-for-differences-between-sites">Test for differences between sites</h3>
+<ul>
+<li><code>alpha-group-significance</code> compares alpha diversity between sites with a <strong>Kruskal-Wallis test</strong> (a rank-based test that doesn’t assume the data are normally distributed). It makes a box plot for each site</li>
+<li><code>beta-group-significance</code> tests whether communities differ between sites with <strong>PERMANOVA</strong>, using the Bray-Curtis distances. It asks whether samples from the same site are more similar to each other than to samples from the other site
+<ul>
+<li><code>--m-metadata-column site</code>: the column in <code>sample-metadata.tsv</code> that defines the groups</li>
+</ul></li>
+</ul>
+<pre class="{bash}"><code>source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+cd ../output/03.1-eDNA
+
+for marker in V9 COI; do
+  for metric in shannon observed_features; do
+    qiime diversity alpha-group-significance \
+      --i-alpha-diversity ${marker}-core-metrics/${metric}_vector.qza \
+      --m-metadata-file sample-metadata.tsv \
+      --o-visualization ${marker}-${metric}-by-site.qzv
+  done
+
+  qiime diversity beta-group-significance \
+    --i-distance-matrix ${marker}-core-metrics/bray_curtis_distance_matrix.qza \
+    --m-metadata-file sample-metadata.tsv \
+    --m-metadata-column site \
+    --o-visualization ${marker}-bray-curtis-by-site.qzv
+done</code></pre>
+<p><strong>Results from this run:</strong></p>
+<table class="table">
+<thead>
+<tr class="header">
+<th>Marker</th>
+<th>Measure</th>
+<th>Site 1 (median)</th>
+<th>Site 5 (median)</th>
+<th>p-value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>18S V9</td>
+<td>Shannon diversity</td>
+<td>6.0</td>
+<td>5.3</td>
+<td>&lt; 0.001</td>
+</tr>
+<tr class="even">
+<td>18S V9</td>
+<td>Number of ASVs</td>
+<td>508</td>
+<td>363</td>
+<td>0.03</td>
+</tr>
+<tr class="odd">
+<td>18S V9</td>
+<td>Community composition (Bray-Curtis PERMANOVA)</td>
+<td></td>
+<td></td>
+<td>0.001</td>
+</tr>
+<tr class="even">
+<td>COI</td>
+<td>Shannon diversity</td>
+<td>4.8</td>
+<td>5.3</td>
+<td>0.10</td>
+</tr>
+<tr class="odd">
+<td>COI</td>
+<td>Number of ASVs</td>
+<td>160</td>
+<td>174</td>
+<td>0.17</td>
+</tr>
+<tr class="even">
+<td>COI</td>
+<td>Community composition (Bray-Curtis PERMANOVA)</td>
+<td></td>
+<td></td>
+<td>0.001</td>
+</tr>
+</tbody>
+</table>
+<p>Site 1 has more diverse eukaryote communities by 18S, but COI shows no clear difference in alpha diversity. Both markers show that the two sites have different communities (PERMANOVA). A significant PERMANOVA can also mean the sites differ in how <em>variable</em> their samples are, not only in their average community; <code>qiime diversity beta-group-significance --p-method permdisp</code> tests for that.</p>
+</section>
+</section>
 <section id="glossary" class="level2">
 <h2 class="anchored" data-anchor-id="glossary">Glossary</h2>
 <ul>
+<li><strong>Alpha diversity</strong>: diversity within one sample, e.g. the number of ASVs or the Shannon index</li>
 <li><strong>Amplicon</strong>: a piece of DNA copied many times by PCR. Here, the 18S V9 or COI barcode region</li>
 <li><strong>ASV (amplicon sequence variant)</strong>: an exact DNA sequence that DADA2 concludes is real (not a sequencing error). Roughly, one ASV ≈ one species or strain</li>
+<li><strong>Beta diversity</strong>: how different two samples’ communities are. Bray-Curtis and Jaccard are two ways to measure it (0 = identical, 1 = nothing shared)</li>
 <li><strong>Chimera</strong>: a fake sequence formed during PCR from two different organisms’ DNA</li>
 <li><strong>Feature table</strong>: a table of read counts, with ASVs as rows and samples as columns</li>
 <li><strong>FASTQ</strong>: the file format for sequencing reads: each read’s DNA sequence plus a quality score for each base</li>
 <li><strong>Paired-end (R1 / R2)</strong>: each DNA fragment is read from both ends. R1 is the forward read and R2 the reverse read</li>
+<li><strong>PERMANOVA</strong>: a test of whether groups of samples (here, sites) have different communities, based on a distance matrix</li>
 <li><strong>Primer</strong>: a short DNA sequence that starts PCR copying at a specific place in the genome</li>
+<li><strong>Rarefaction</strong>: randomly subsampling every sample to the same number of reads, so samples with more reads don’t look more diverse just because of sequencing effort</li>
 <li><strong>Reverse complement</strong>: the sequence of the opposite DNA strand, read in the same direction (A↔︎T, C↔︎G, reversed)</li>
 </ul>
 </section>
