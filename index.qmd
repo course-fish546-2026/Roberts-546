@@ -14,7 +14,7 @@ Rendered pages from this project. Source code and outputs are in the [GitHub rep
 |----------------------------------|--------------------------------------|
 | [03.2 · Beginner eDNA workflow](code/03.2-eDNA.html) | Start here: 6 samples, one marker (18S V9), from raw reads to a taxa plot in R |
 | [03.1 · Simple eDNA workflow](code/03.1-eDNA.html) | All samples, two markers (18S V9 and COI) |
-| [03 · Full eDNA workflow](https://github.com/course-fish546-2026/Roberts-546/blob/main/code/03-eDNA.qmd) | Detailed working version (source only) |
+| [03 · Full eDNA workflow](code/03-eDNA.html) | Detailed working version: fastp/MultiQC QC, primer trimming, DADA2, and taxonomy (V9 and COI) |
 
 ## Other code
 
