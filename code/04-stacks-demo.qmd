@@ -1,6 +1,9 @@
 ---
 title: "04-stacks-demo"
 editor: visual
+format:
+  html:
+    embed-resources: true
 execute:
   eval: false
 ---
@@ -31,7 +34,7 @@ This is a practice run of the [Stacks](https://catchenlab.life.illinois.edu/stac
 
 The reads are simulated in the first chunk, so we know the true answer: most loci have the same allele frequencies in both populations, but some loci are set up to differ strongly between them. If the pipeline works, `populations` should find low overall F~ST~ with a small set of high-F~ST~ loci.
 
-**All chunks are set to `eval: false`** (see `execute:` in the header) so rendering this file does not run anything. To run a chunk, run it by hand in RStudio, or delete `eval: false` from the header.
+**The pipeline chunks are set to `eval: false`** (see `execute:` in the header) so rendering this file does not rerun Stacks. The R chunks at the end (F~ST~ and the population plots) have `#| eval: true`, so they run on the existing output in `../output/04-stacks-demo/` when you render. To run a chunk, run it by hand in RStudio, or delete `eval: false` from the header.
 
 ### The steps
 
@@ -417,6 +420,7 @@ This R chunk reads the per-SNP F~ST~ table and plots the F~ST~ values as a histo
 To check against the simulation: the Stacks locus numbers do not match the simulated locus numbers, but the number of high-F~ST~ SNPs should be close to the number of `outlier` rows in `truth_snps.tsv`.
 
 ```{r}
+#| eval: true
 library(readr)
 library(dplyr)
 library(stringr)
@@ -459,6 +463,7 @@ Each genotype in the VCF looks like `0/1:15:9,6:40:...`. Only the first field (`
 The chunk only needs `readr`/`dplyr`/`tidyr`, so no extra packages (like `vcfR` or `adegenet`) have to be installed.
 
 ```{r}
+#| eval: true
 library(tidyr)
 
 vcf_file <- "../output/04-stacks-demo/populations/populations.snps.vcf"
@@ -499,6 +504,7 @@ Principal component analysis (PCA) finds the directions (PCs) along which the pl
 PCA cannot use missing values, so each missing genotype is replaced with that SNP's mean (a common, simple fix). SNPs with no variation are dropped because they carry no information and would break scaling.
 
 ```{r}
+#| eval: true
 impute_mean <- function(m) {
   apply(m, 2, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); x })
 }
@@ -536,6 +542,7 @@ In the simulation only ~10% of SNPs were set up to differ between populations. T
 The VCF `ID` column is `<locus>:<column>`, so the locus number before the `:` matches `Locus.ID` in the F~ST~ table.
 
 ```{r}
+#| eval: true
 fst_by_id <- fst |>
   mutate(ID = paste0(Locus.ID, ":", Column)) |>
   select(ID, AMOVA.Fst)
@@ -553,6 +560,7 @@ plot_pca(pca_neutral, "PCA without the top 10% Fst SNPs")
 A heatmap shows the actual genotypes behind the F~ST~ values. Each row is a plant (grouped by population) and each column is one of the 25 SNPs with the highest F~ST~. At outlier SNPs, expect most PB plants to have one genotype and most SJ plants the other. Grey tiles are missing genotypes.
 
 ```{r}
+#| eval: true
 top_ids <- fst_by_id |> arrange(desc(AMOVA.Fst)) |> slice_head(n = 25) |> pull(ID)
 
 geno_long <- as_tibble(geno_mat[, top_ids], rownames = "sample") |>
