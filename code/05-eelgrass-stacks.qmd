@@ -38,14 +38,14 @@ Because a reference genome exists, the main path here is **reference-based** Sta
 
 Each Quarto bash chunk is a new shell, so paths go in an env file that every chunk `source`s (same trick as in `04-stacks-demo.qmd`).
 
-**TODO:** set `SRC` to where Christian's `project_data/` folder actually lives on Raven. The value below assumes both repos are cloned side by side in `~/GitHub/`.
+`SRC` points at Christian's `project_data/` folder on Raven. As of Nov 2026 it holds only **one** sample (`NA0106`); the other plants need to be copied there before the population steps mean anything.
 
 ```{bash}
 mkdir -p ../output/05-eelgrass-stacks
 
 cat > ../output/05-eelgrass-stacks/eelgrass.env << 'EOF'
-# Source of the raw data (Christian's copy on Raven) -- TODO: confirm
-SRC=$HOME/GitHub/Christian-546/data/raw/project_data
+# Source of the raw data (Christian's copy on Raven)
+SRC=/home/shared/8TB_HDD_03/grantc21/GitHub/Christian-546/data/raw/project_data
 
 # Inside this repo
 RAW=../data/raw/eelgrass-radseq
@@ -74,6 +74,10 @@ mkdir -p $RAW/fastq_reads
 
 ln -sf $SRC/Zmarina_668_v2.0.fa $RAW/
 ln -sf $SRC/fastq_reads/*.fq    $RAW/fastq_reads/
+# Reuse Christian's bwa index if it exists (saves ~3.5 min of re-indexing)
+for ext in amb ann bwt pac sa fai; do
+  [ -e $SRC/Zmarina_668_v2.0.fa.$ext ] && ln -sf $SRC/Zmarina_668_v2.0.fa.$ext $RAW/
+done
 
 ls -lh $RAW | head
 ls $RAW/fastq_reads | head
@@ -108,7 +112,7 @@ echo "Most reads:";   tail -5 $OUT/reads_per_sample.tsv
 
 Every read should start with the same few bases (what is left of the restriction site). Tabulating the first 6 bases of one sample shows what that motif is, which tells us the enzyme. For example, `TGCAGG` = SbfI, `CATGC` = SphI, `AATTC` = EcoRI, `CATG` = NlaIII. This matters for the de novo path (`process_radtags -e`) and for the methods section.
 
-**TODO:** confirm the enzyme and library prep with whoever made the libraries.
+For `NA0106`, all of the first 200,000 reads start with `TGCAGG`, so the enzyme is **SbfI** (CCTGCA\^GG). **TODO:** confirm the library prep with whoever made the libraries.
 
 ```{bash}
 source ../output/05-eelgrass-stacks/eelgrass.env
@@ -177,13 +181,13 @@ multiqc $OUT/trimmed -o $OUT/trimmed/multiqc || echo "multiqc not found; look at
 
 ## Step 3: Align to the eelgrass genome with `bwa mem`
 
-First index the genome (only needed once; it writes `.amb .ann .bwt .pac .sa` files next to the FASTA). The symlinked FASTA lives in `data/raw/`, so the index files land there too and are not committed.
+First index the genome (only needed once; it writes `.amb .ann .bwt .pac .sa` files next to the FASTA). Step 0 links Christian's index if he already built one, so this chunk skips any index that is already there. Anything new lands in `data/raw/` and is not committed.
 
 ```{bash}
 source ../output/05-eelgrass-stacks/eelgrass.env
 
-$BWA index $GENOME
-$SAMTOOLS faidx $GENOME
+[ -e $GENOME.bwt ] || $BWA index $GENOME
+[ -e $GENOME.fai ] || $SAMTOOLS faidx $GENOME
 ```
 
 Then align each plant, sort, and index. Compared with Christian's test chunk, this:
@@ -209,7 +213,7 @@ ls $OUT/bam/*.bam | wc -l
 
 ## Step 4: Check mapping per sample
 
-A low mapping rate can mean contamination, a mislabeled sample, or a sample from a different species. Expect most reads to map (eelgrass to its own genome).
+A low mapping rate can mean contamination, a mislabeled sample, or a sample from a different species. For `NA0106`, 72.5% of trimmed reads mapped (64.5% at MAPQ ≥ 20). Use that as a baseline, and look closely at plants well below it.
 
 ```{bash}
 source ../output/05-eelgrass-stacks/eelgrass.env
@@ -259,7 +263,7 @@ Starting filters (**TODO:** tune once you see how many loci survive):
 -   `-p 4`: keep a locus only if it is present in all 4 populations
 -   `-r 0.75`: in each population, the locus must be genotyped in ≥ 75% of plants
 -   `--min-maf 0.05`: drop rare alleles (often errors)
--   `--max-obs-het 0.7`: drop loci where most plants look heterozygous, a sign that two paralogous loci were collapsed into one
+-   `--max-obs-het 0.7`: drop loci where most plants look heterozygous, a sign that two paralogous loci were collapsed into one. **Do not use this on a test run with one or two plants**: every variable site is then heterozygous, all SNPs are removed, and `populations` aborts while writing the STRUCTURE file.
 -   `--write-single-snp`: one SNP per locus, so SNPs are close to independent (assumed by PCA, STRUCTURE, etc.)
 -   `--fstats`: pairwise F~ST~ between all population pairs
 -   `--vcf --plink --genepop --structure`: export formats
@@ -288,6 +292,8 @@ cat $OUT/populations/populations.fst_summary.tsv
 ## Step 7: Missing data and PCA (R)
 
 This reads the `populations` VCF, converts genotypes to 0/1/2 (number of alternate alleles), reports how much data each plant is missing, and runs a PCA. Missing genotypes are filled with the SNP's mean so `prcomp` can run; plants with lots of missing data get pulled toward the center of the plot, so check the missingness table before interpreting outliers.
+
+`vcfR` is not installed on Raven yet; run `install.packages("vcfR")` once first.
 
 ```{r}
 library(vcfR)
@@ -319,11 +325,13 @@ write_tsv(miss, file.path(out, "missing_per_sample.tsv"))
 
 # Mean-impute, drop invariant SNPs, PCA
 dosage_imp <- apply(dosage, 2, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); x })
-dosage_imp <- dosage_imp[, apply(dosage_imp, 2, var) > 0]
+# which() drops SNPs missing in every plant (their variance is NA, which breaks prcomp)
+dosage_imp <- dosage_imp[, which(apply(dosage_imp, 2, var) > 0), drop = FALSE]
 pca <- prcomp(dosage_imp, center = TRUE, scale. = FALSE)
 pve <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
 
-scores <- as_tibble(pca$x[, 1:4], rownames = "sample") |>
+n_pc <- min(4, ncol(pca$x))
+scores <- as_tibble(pca$x[, 1:n_pc, drop = FALSE], rownames = "sample") |>
   left_join(popmap, by = "sample")
 write_tsv(scores, file.path(out, "pca_scores.tsv"))
 
@@ -348,18 +356,18 @@ ggsave(file.path(out, "pca_PC1_PC2.png"), p, width = 6, height = 5, dpi = 300)
 
 To compare with the reference-based result (or if alignment rates are poor), the reads can go through the same de novo steps as `04-stacks-demo.qmd`. Two differences with real, already-demultiplexed reads:
 
-1.  Use `process_radtags` in **directory mode with no barcodes** (`-p` input folder, no `-b`) to check the cut site and **truncate every read to the same length** (`-t`), which `ustacks` requires. Do this on the raw reads, not the `fastp` output, so the cut site is still there. **TODO:** set `-e` to the enzyme found above. Note that `process_radtags` names its outputs after the input files (`NA0106.1.fq.gz`), so rename them to `NA0106.fq.gz` to match the popmap.
+1.  Use `process_radtags` in **directory mode with no barcodes** (`-p` input folder, no `-b`) to check the cut site and **truncate every read to the same length** (`-t`), which `ustacks` requires. Do this on the raw reads, not the `fastp` output, so the cut site is still there. The enzyme is SbfI (see the cut-site table above). `process_radtags` keeps the input format unless told otherwise, so `-y gzfastq` makes it write gzipped reads. It names its outputs after the input files (`NA0106.1.fq.gz`), so rename them to `NA0106.fq.gz` to match the popmap.
 2.  Then run `ustacks` → `cstacks` → `sstacks` → `tsv2bam` → `gstacks -P` → `populations -P` exactly as in the demo, using this project's `$POPMAP`. Tune `-M`/`-n` (try 1–8) with the r80 method.
 
 ```{bash}
 source ../output/05-eelgrass-stacks/eelgrass.env
 mkdir -p $OUT/denovo/clean $OUT/denovo/stacks
 
-ENZYME=sbfI   # TODO: set from the cut-site table above
+ENZYME=sbfI   # every read starts with TGCAGG
 
 $STACKS/process_radtags \
   -p $RAW/fastq_reads \
-  -i fastq \
+  -i fastq -y gzfastq \
   -o $OUT/denovo/clean \
   -e $ENZYME \
   -r -c -q \
