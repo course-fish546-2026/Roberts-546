@@ -1,0 +1,64 @@
+---
+title: "02-data-qc"
+editor: visual
+---
+
+## I want to checksum and qc my data AND want to start mapping for my project
+
+```{bash}
+head ../data/raw/filtered_LTL_PL59_TGACCA_L005_R1.fastq
+```
+
+
+Checksum
+
+```{bash}
+md5sum ../data/raw/filtered_LTL_PL59_TGACCA_L005_R1.fastq
+
+```
+
+```{bash}
+md5sum ../data/raw/*
+
+```
+
+
+
+
+#fastqc
+
+
+```{bash}
+/home/shared/FastQC-0.12.1/fastqc ../data/raw/filtered_LTL_PL59_TGACCA_L005_R1.fastq
+```
+
+
+# multiqc
+
+
+```{bash}
+/home/shared/MultiQC.v1.12.dev0/multiqc -h
+```
+
+
+
+# trimming 
+
+```{bash}
+/home/shared/fastp
+```
+
+
+```{bash}
+/home/shared/fastp \
+-i ../data/raw/filtered_LTL_PL59_TGACCA_L005_R1.fastq \
+-o ../data/trimmed_filtered_LTL_PL59_TGACCA_L005_R1.fastq
+```
+
+#fastqc
+
+
+```{bash}
+/home/shared/FastQC-0.12.1/fastqc ../data/trimmed_filtered_LTL_PL59_TGACCA_L005_R1.fastq
+```
+

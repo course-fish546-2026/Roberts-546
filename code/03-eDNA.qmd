@@ -1,0 +1,537 @@
+---
+title: "03-eDNA"
+editor: visual
+execute:
+  eval: false
+---
+
+## About these libraries
+
+These are environmental DNA (eDNA) metabarcoding libraries from samples collected at two sites at Yellow Island (Site 1 and Site 5), with "July18" in the file names and the data folder labeled 2023. The details below are worked out from the reads themselves, not from lab records, so check them against the lab notebook.
+
+-   **Amplicon (PCR) libraries.** DNA extracted from each sample was amplified with primers for two markers: 18S V9 (primers 1391f / EukBr, ~170 bp product, for eukaryotes in general) and COI (Leray primers mlCOIintF / jgHCO2198, ~313 bp product, mostly for animals). Both markers are in the same library for most samples: about 60–90% of reads are 18S V9 and the rest COI. A few samples (Site1U, Site5g, Site5q, Site1J, Site1ee) are almost all COI. The primer sequences are still on the start of every read.
+-   **Illumina adapters and indexes.** The reads contain the Nextera-style adapter sequence (`CTGTCTCTTATACACATCT`), and each read header ends with two index sequences (e.g. `CCAGGCA+CCAAGGT`). This fits a two-step PCR: the first PCR adds the marker primers plus adapter "tails", and a second short PCR adds a pair of indexes that identify each sample.
+-   **Sequencing.** Paired-end 2 × 301 bp reads on an Illumina NextSeq 2000 (instrument ID `VH01481` in the read headers). The 18S V9 product is shorter than the reads, so most reads run through the whole product and into the adapter. This instrument records "no signal" as G, so the ends of these reads are long runs of G's.
+-   **Sample names** follow `Yell_July18_Site<site><replicate>_S<number>`, where `S<number>` is the sample's position on the sequencing sample sheet.
+
+## Download Yellow Island 2023 eDNA data
+
+Raw reads (`*.fastq.gz`) and their `.md5` checksums from <https://owl.fish.washington.edu/nightingales/eDNA-yellow_island-2023/>
+
+This chunk creates a folder for the data in `../data/raw/eDNA-yellow_island-2023`, moves into it, and uses `wget` to download every file listed on the server. The options do the following:
+
+-   `-r -np`: follow the links in the directory listing (recursive), but never go up to the parent directory
+-   `-nd`: save all files directly in the current folder instead of recreating the server's folder structure
+-   `-nc`: skip files that are already downloaded, so the chunk can be rerun safely if the download is interrupted
+-   `-A "*.fastq.gz,*.md5"`: keep only the sequence files and their checksum files
+-   `-R "index.html*"`: do not keep the directory listing pages
+-   `-X ".../@eaDir"`: skip the `@eaDir` folder, which holds server thumbnails and not data
+
+```{bash}
+mkdir -p ../data/raw/eDNA-yellow_island-2023
+cd ../data/raw/eDNA-yellow_island-2023
+
+wget -r -np -nd -nc \
+  -A "*.fastq.gz,*.md5" \
+  -R "index.html*" \
+  -X "/nightingales/eDNA-yellow_island-2023/@eaDir" \
+  https://owl.fish.washington.edu/nightingales/eDNA-yellow_island-2023/
+```
+
+## Check that downloads are complete
+
+This chunk checks the download. First it counts the `.fastq.gz` files; there should be 119. Then it combines all the `.md5` files and passes them to `md5sum -c`, which computes a checksum for each downloaded file and compares it to the one from the server. Only files that fail are printed. If every file matches, it prints "All checksums OK". A failed file is corrupt or incomplete: delete it and rerun the download chunk.
+
+```{bash}
+cd ../data/raw/eDNA-yellow_island-2023
+ls *.fastq.gz | wc -l
+cat *.md5 | md5sum -c - | grep -v ': OK$' || echo "All checksums OK"
+```
+
+## Trim reads with fastp
+
+This chunk trims every sample with `fastp` (`/home/shared/fastp`), keeping each R1/R2 pair together. It loops over the R1 files, makes the matching R2 file name by swapping `_R1_` for `_R2_`, skips any sample with no R2 file (`Site5t_S125` has only R1 on the server), and writes the trimmed reads to `../data/trimmed/eDNA-yellow_island-2023`. With default settings `fastp` removes adapters, trims low-quality bases, and drops reads that end up too short. It also writes an HTML and a JSON QC report for each sample.
+
+```{bash}
+mkdir -p ../data/trimmed/eDNA-yellow_island-2023
+
+for r1 in ../data/raw/eDNA-yellow_island-2023/*_R1_001.fastq.gz; do
+  r2=${r1/_R1_/_R2_}
+  sample=$(basename "$r1" _R1_001.fastq.gz)
+
+  if [ ! -f "$r2" ]; then
+    echo "Skipping $sample: no R2 file"
+    continue
+  fi
+
+  /home/shared/fastp \
+    -i "$r1" -I "$r2" \
+    -o ../data/trimmed/eDNA-yellow_island-2023/${sample}_R1_trimmed.fastq.gz \
+    -O ../data/trimmed/eDNA-yellow_island-2023/${sample}_R2_trimmed.fastq.gz \
+    -h ../data/trimmed/eDNA-yellow_island-2023/${sample}_fastp.html \
+    -j ../data/trimmed/eDNA-yellow_island-2023/${sample}_fastp.json
+done
+```
+
+## Summarize fastp reports with MultiQC
+
+This chunk runs MultiQC on the trimmed-reads folder. MultiQC finds all the `*_fastp.json` reports from the trimming step and combines them into a single report, so you can compare every sample in one place: reads before and after filtering, duplication, adapter content, and quality scores. The report is written to `../data/trimmed/eDNA-yellow_island-2023/multiqc/multiqc_report.html`.
+
+-   `-o`: the folder to write the report into
+-   `-f`: overwrite an existing report, so the chunk can be rerun
+
+```{bash}
+/opt/anaconda/anaconda3/bin/multiqc \
+  ../data/trimmed/eDNA-yellow_island-2023 \
+  -o ../data/trimmed/eDNA-yellow_island-2023/multiqc \
+  -f
+```
+
+## Remove primers and split by marker with cutadapt
+
+The fastp/MultiQC reports showed that every sample has reads from two amplicons, and that the PCR primers are still on the reads:
+
+| Marker      | Forward primer (R1)                     | Reverse primer (R2)                          |
+|-------------|-----------------------------------------|----------------------------------------------|
+| 18S V9      | `GTACACACCGCCCGTC` (1391f)              | `TGATCCTTCTGCAGGTTCACCTAC` (EukBr)           |
+| COI (Leray) | `GGWACWGGWTGAACWGTWTAYCCYCC` (mlCOIintF) | `TAIACYTCIGGRTGICCRAARAAYCA` (jgHCO2198)     |
+
+This chunk runs `cutadapt` (`/home/shared/cutadapt-venv/bin/cutadapt`) on the **raw** reads of each sample. It finds which primer pair each read starts with, cuts that primer off, and writes the read pair into a `V9/` or `COI/` folder under `../data/primer-trimmed/eDNA-yellow_island-2023`. The loop skips samples with no R2 file (`Site5t_S125`) and samples whose files are empty (`Site1aa`, `Site1x`, `Site5d`, `Site5dd`, `Site5gg`).
+
+-   `-g` / `-G`: the forward primer to look for in R1 and the reverse primer in R2. `^` anchors the primer to the start of the read. The `NAME=` part labels each primer so `{name}` in the output path becomes `V9` or `COI`
+-   `--pair-adapters`: a read pair only counts as a match if R1 and R2 match primers from the same marker
+-   `--discard-untrimmed`: drop read pairs that don't start with either primer pair
+-   `-e 0.1`: allow up to 10% mismatches in the primer
+-   `-j 8`: use 8 CPU cores
+-   The `I` (inosine) bases in the COI reverse primer are written as `N`, since inosine pairs with any base
+
+A cutadapt log for each sample is saved as `${sample}_cutadapt.log`.
+
+```{bash}
+outdir=../data/primer-trimmed/eDNA-yellow_island-2023
+mkdir -p ${outdir}/V9 ${outdir}/COI
+
+for r1 in ../data/raw/eDNA-yellow_island-2023/*_R1_001.fastq.gz; do
+  r2=${r1/_R1_/_R2_}
+  sample=$(basename "$r1" _R1_001.fastq.gz)
+
+  if [ ! -f "$r2" ]; then
+    echo "Skipping $sample: no R2 file"
+    continue
+  fi
+
+  if [ -z "$(zcat "$r1" | head -c 1)" ]; then
+    echo "Skipping $sample: no reads"
+    continue
+  fi
+
+  /home/shared/cutadapt-venv/bin/cutadapt \
+    -g V9=^GTACACACCGCCCGTC -G V9=^TGATCCTTCTGCAGGTTCACCTAC \
+    -g COI=^GGWACWGGWTGAACWGTWTAYCCYCC -G COI=^TANACYTCNGGRTGNCCRAARAAYCA \
+    --pair-adapters --discard-untrimmed -e 0.1 -j 8 \
+    -o ${outdir}/{name}/${sample}_R1.fastq.gz \
+    -p ${outdir}/{name}/${sample}_R2.fastq.gz \
+    "$r1" "$r2" \
+    > ${outdir}/${sample}_cutadapt.log
+done
+```
+
+## Quality trim each marker with fastp
+
+This chunk runs `fastp` again, now on the primer-trimmed reads, once for each marker folder. The trimmed reads and fastp reports go to `../data/trimmed-qc/eDNA-yellow_island-2023/V9` and `.../COI`.
+
+-   `--detect_adapter_for_pe`: look for adapter sequence in each read, as well as finding it by overlapping R1 and R2, so it is also removed from pairs that don't overlap well
+-   `--cut_right`: scan each read from the start in windows of 4 bases (`--cut_right_window_size 4`); when a window's average quality falls below Q20 (`--cut_right_mean_quality 20`), cut the read there and drop the rest
+-   `-g`: trim runs of G's from the ends of reads. These reads come from a two-color Illumina sequencer (NextSeq 2000), which records "no signal" as G, so reads that run past the end of the DNA fragment end in a string of G's. fastp only turns this on by itself for instruments it recognizes, and it doesn't recognize this one
+-   `-l 50`: drop read pairs where either read is shorter than 50 bp after trimming (the 18S V9 region is about 90–190 bp)
+-   `-w 8`: use 8 threads
+
+Reads are not merged here, so R1 and R2 stay separate for a later step such as DADA2.
+
+```{bash}
+indir=../data/primer-trimmed/eDNA-yellow_island-2023
+outdir=../data/trimmed-qc/eDNA-yellow_island-2023
+
+for marker in V9 COI; do
+  mkdir -p ${outdir}/${marker}
+
+  for r1 in ${indir}/${marker}/*_R1.fastq.gz; do
+    r2=${r1/_R1/_R2}
+    sample=$(basename "$r1" _R1.fastq.gz)
+
+    /home/shared/fastp \
+      -i "$r1" -I "$r2" \
+      -o ${outdir}/${marker}/${sample}_R1_trimmed.fastq.gz \
+      -O ${outdir}/${marker}/${sample}_R2_trimmed.fastq.gz \
+      --detect_adapter_for_pe \
+      --cut_right --cut_right_window_size 4 --cut_right_mean_quality 20 \
+      -g \
+      -l 50 \
+      -w 8 \
+      -h ${outdir}/${marker}/${sample}_fastp.html \
+      -j ${outdir}/${marker}/${sample}_fastp.json
+  done
+done
+```
+
+## Summarize quality-trimmed reports with MultiQC
+
+This chunk runs MultiQC once for each marker. For each marker it reads the `*_fastp.json` reports in `../data/trimmed-qc/eDNA-yellow_island-2023/V9` or `.../COI` and combines them into one report. You can then check how many reads each sample kept and the read lengths and quality after trimming, for 18S V9 and COI separately.
+
+-   `-o`: write the report into a `multiqc` folder inside that marker's folder (for example `.../V9/multiqc/V9_multiqc_report.html`)
+-   `-n`: name the report after the marker (`V9_multiqc_report.html` or `COI_multiqc_report.html`), so the two reports are easy to tell apart
+-   `-f`: overwrite an existing report, so the chunk can be rerun
+
+```{bash}
+outdir=../data/trimmed-qc/eDNA-yellow_island-2023
+
+for marker in V9 COI; do
+  /opt/anaconda/anaconda3/bin/multiqc \
+    ${outdir}/${marker} \
+    -o ${outdir}/${marker}/multiqc \
+    -n ${marker}_multiqc_report.html \
+    -f
+done
+```
+
+## Denoise reads into ASVs with QIIME 2
+
+The next chunks use QIIME 2 (`qiime2-2026.7` conda environment) to turn the quality-trimmed reads into amplicon sequence variants (ASVs): exact DNA sequences, each with a count of how many reads it has in each sample. Each marker is run separately, because 18S V9 and COI are different genes and are classified against different reference databases later.
+
+QIIME 2 only works when its conda environment is active, so each chunk starts by activating it. Quarto runs every chunk in a new shell, so the environment has to be activated again in each one.
+
+All QIIME 2 files go to `../data/qiime2/eDNA-yellow_island-2023/V9` and `.../COI`. QIIME 2 saves data as `.qza` files and viewable reports as `.qzv` files. To look at a `.qzv`, drag it onto <https://view.qiime2.org>.
+
+### Make a manifest and import the reads
+
+A manifest is a table that tells QIIME 2 which files belong to which sample. This chunk makes one for each marker: a tab-separated file with the sample ID (the file name without `Yell_July18_`) and the full paths to that sample's R1 and R2 files. `realpath` turns each path into a full path, since QIIME 2 requires full paths in the manifest.
+
+The chunk then imports the reads into QIIME 2 (`demux.qza`) and makes a summary (`demux.qzv`) with the number of reads per sample and quality plots for R1 and R2.
+
+-   `--type 'SampleData[PairedEndSequencesWithQuality]'`: the reads are paired-end, with quality scores, already split by sample
+-   `--input-format PairedEndFastqManifestPhred33V2`: the input is a tab-separated manifest, and quality scores use the standard Illumina (Phred+33) encoding
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+indir=../data/trimmed-qc/eDNA-yellow_island-2023
+outdir=../data/qiime2/eDNA-yellow_island-2023
+
+for marker in V9 COI; do
+  mkdir -p ${outdir}/${marker}
+  manifest=${outdir}/${marker}/manifest.tsv
+
+  printf "sample-id\tforward-absolute-filepath\treverse-absolute-filepath\n" > ${manifest}
+
+  for r1 in ${indir}/${marker}/*_R1_trimmed.fastq.gz; do
+    r2=${r1/_R1_trimmed/_R2_trimmed}
+    sample=$(basename "$r1" _R1_trimmed.fastq.gz)
+    sample=${sample#Yell_July18_}
+    printf "%s\t%s\t%s\n" "$sample" "$(realpath "$r1")" "$(realpath "$r2")" >> ${manifest}
+  done
+
+  qiime tools import \
+    --type 'SampleData[PairedEndSequencesWithQuality]' \
+    --input-path ${manifest} \
+    --input-format PairedEndFastqManifestPhred33V2 \
+    --output-path ${outdir}/${marker}/demux.qza
+
+  qiime demux summarize \
+    --i-data ${outdir}/${marker}/demux.qza \
+    --o-visualization ${outdir}/${marker}/demux.qzv
+done
+```
+
+### Denoise 18S V9 with DADA2
+
+DADA2 learns the error pattern of this sequencing run and uses it to separate real sequences from sequencing errors. It then merges each R1/R2 pair into one sequence, removes chimeras (artificial sequences made from two different organisms during PCR), and counts each final sequence (ASV) in each sample.
+
+-   `--p-trunc-len-f 0 --p-trunc-len-r 0`: don't cut the reads to a fixed length. The 18S V9 amplicon (about 90–190 bp) is shorter than the reads, so the reads already cover the whole amplicon, and fastp has already removed adapters and low-quality ends
+-   `--p-n-threads 16`: use 16 threads
+-   Outputs: `table.qza` (ASV counts per sample), `rep-seqs.qza` (the sequence of each ASV), `denoising-stats.qza` (how many reads per sample passed each step) and `base-transition-stats.qza` (the error model DADA2 learned)
+
+On a test with Site1a, 92% of reads made it through all the steps, and most ASVs were about 127 bp long.
+
+This chunk can take a long time to run with all samples.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023/V9
+
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs ${outdir}/demux.qza \
+  --p-trunc-len-f 0 \
+  --p-trunc-len-r 0 \
+  --p-n-threads 16 \
+  --o-table ${outdir}/table.qza \
+  --o-representative-sequences ${outdir}/rep-seqs.qza \
+  --o-denoising-stats ${outdir}/denoising-stats.qza \
+  --o-base-transition-stats ${outdir}/base-transition-stats.qza
+```
+
+### Denoise COI with DADA2
+
+This is the same as the 18S V9 step, but here the reads are cut to fixed lengths. The COI amplicon is about 313 bp after the primers are removed. Its R1 and R2 reads only overlap at their ends, which is where quality is lowest, and on a test with Site1a, only about 60% of uncut read pairs merged. Cutting R1 to 180 bp and R2 to 160 bp removes the worst bases. That leaves an overlap of about 27 bp, enough to merge, and about 90% of the pairs that passed filtering merged.
+
+-   `--p-trunc-len-f 180`: cut R1 to 180 bp; shorter R1 reads are dropped
+-   `--p-trunc-len-r 160`: cut R2 to 160 bp; shorter R2 reads are dropped
+
+On the Site1a test, about 55% of COI reads made it through all the steps, and most ASVs were 313 bp long, the expected length. Check `denoising-stats.qzv` for all samples. If many reads are lost at the filtering step, try shorter lengths; if many are lost at the merging step, try longer ones. R1 + R2 must stay above about 330 bp so the reads still overlap.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023/COI
+
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs ${outdir}/demux.qza \
+  --p-trunc-len-f 180 \
+  --p-trunc-len-r 160 \
+  --p-n-threads 16 \
+  --o-table ${outdir}/table.qza \
+  --o-representative-sequences ${outdir}/rep-seqs.qza \
+  --o-denoising-stats ${outdir}/denoising-stats.qza \
+  --o-base-transition-stats ${outdir}/base-transition-stats.qza
+```
+
+### Summarize the DADA2 results
+
+This chunk makes three reports for each marker:
+
+-   `denoising-stats.qzv`: for each sample, how many reads were kept after filtering, denoising, merging and chimera removal. Use this to check the truncation settings and to spot samples with too few reads
+-   `table.qzv`: the number of reads and ASVs per sample and per ASV. This helps choose a sampling depth for diversity analysis later. `feature-table summarize` also saves the per-ASV and per-sample counts as `feature-frequencies.qza` and `sample-frequencies.qza`
+-   `rep-seqs.qzv`: a list of ASV sequences and their lengths. Each sequence links to an NCBI BLAST search
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023
+
+for marker in V9 COI; do
+  qiime metadata tabulate \
+    --m-input-file ${outdir}/${marker}/denoising-stats.qza \
+    --o-visualization ${outdir}/${marker}/denoising-stats.qzv
+
+  qiime feature-table summarize \
+    --i-table ${outdir}/${marker}/table.qza \
+    --o-feature-frequencies ${outdir}/${marker}/feature-frequencies.qza \
+    --o-sample-frequencies ${outdir}/${marker}/sample-frequencies.qza \
+    --o-summary ${outdir}/${marker}/table.qzv
+
+  qiime feature-table tabulate-seqs \
+    --i-data ${outdir}/${marker}/rep-seqs.qza \
+    --o-visualization ${outdir}/${marker}/rep-seqs.qzv
+done
+```
+
+## Assign taxonomy
+
+The next chunks name the organism behind each ASV by comparing it to a reference database of sequences from known taxa. Each marker uses a different database, and a different method:
+
+| Marker | Reference database | Method |
+|----|----|----|
+| 18S V9 | PR2 version 5.1.1, a curated 18S database focused on protists and other eukaryotes | Naive Bayes classifier (`classify-sklearn`) |
+| COI | MIDORI2 GB273 CO1 "uniq", curated mitochondrial sequences from GenBank with every unique sequence kept for each species | Direct matching with vsearch (`classify-consensus-vsearch`), at least 97% identity |
+
+-   **Naive Bayes classifier.** It is trained on the reference sequences and learns which short DNA "words" (k-mers) go with which taxa. It then predicts each ASV's taxonomy and gives a confidence score for each rank. If confidence at a rank is below 70%, the ASV is only named to the rank above.
+-   **vsearch.** It aligns each ASV to the reference sequences and finds the closest matches. The ASV gets the taxonomy those best matches agree on. If no reference is at least 97% identical, the ASV is "Unassigned".
+
+**Why COI uses vsearch at 97%.** We first ran vsearch at 90% identity. That named 82% of COI reads, but the top "hits" were tropical butterflies, beetles, a squirrel, goat and human, in every sample. None of those ASVs matched any reference at 99% or more, and the median match was 94%. They were unknown sequences given the name of whatever happened to be closest, not real detections. At 97% identity, the named taxa are local marine species, such as *Glycera*, *Euphausia pacifica*, *Littorina scutulata*, *Halichondria* and *Centropages*, which match at 99–100%. The catch is that only about 5% of COI reads get a name. That is common for Leray COI in marine eDNA: the primers also amplify many organisms, such as protists and other microbes, that are poorly represented in the reference database. We also tried training a naive Bayes classifier on MIDORI2 COI, but it was still running after more than 2 hours, using 45 GB of memory, so we stopped it.
+
+For both markers, the reference sequences are first cut to the region between our PCR primers, the same region our ASVs cover. Reference files go to `../data/qiime2/reference`, separate from the sample data, since they can be reused for other projects.
+
+### Build the 18S V9 classifier (PR2)
+
+This chunk:
+
+1.  Downloads PR2 with RESCRIPt (`qiime rescript get-pr2-data`). This gives about 240,000 reference sequences and their taxonomy
+2.  Cuts out the V9 region with `qiime feature-classifier extract-reads`, using the same primers as cutadapt. Only sequences where both primers are found are kept (about 40,000, since many PR2 sequences don't reach the V9 region at the end of the 18S gene). `--p-min-length 60` and `--p-max-length 250` drop extracted pieces that are much shorter or longer than a real V9 amplicon
+3.  Trains the classifier with `qiime feature-classifier fit-classifier-naive-bayes`
+
+On this server, the whole chunk takes about 6 minutes and needs about 7 GB of memory.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+refdir=../data/qiime2/reference
+mkdir -p ${refdir}
+
+qiime rescript get-pr2-data \
+  --p-version 5.1.1 \
+  --o-pr2-sequences ${refdir}/pr2-seqs.qza \
+  --o-pr2-taxonomy ${refdir}/pr2-tax.qza
+
+qiime feature-classifier extract-reads \
+  --i-sequences ${refdir}/pr2-seqs.qza \
+  --p-f-primer GTACACACCGCCCGTC \
+  --p-r-primer TGATCCTTCTGCAGGTTCACCTAC \
+  --p-min-length 60 \
+  --p-max-length 250 \
+  --p-n-jobs 16 \
+  --o-reads ${refdir}/pr2-v9-seqs.qza \
+  --o-read-extraction-stats ${refdir}/pr2-v9-extraction-stats.qza
+
+qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads ${refdir}/pr2-v9-seqs.qza \
+  --i-reference-taxonomy ${refdir}/pr2-tax.qza \
+  --o-classifier ${refdir}/pr2-v9-classifier.qza
+```
+
+### Build the COI reference (MIDORI2)
+
+RESCRIPt has a `get-midori2-data` command, but it doesn't work any more: MIDORI2 moved its files to Zenodo (<https://doi.org/10.5281/zenodo.22685700>), so RESCRIPt's download address gives a "404 Not Found" error. This chunk downloads the files from Zenodo instead.
+
+1.  Downloads `MIDORI2_GB273_QIIME.zip` (433 MB, QIIME-format files for all mitochondrial genes, built from GenBank release 273) and the release's checksum list
+2.  Unzips only the CO1 "uniq" files, then checks them against the checksums with `sha256sum -c`. Both lines should end in `OK`
+3.  Imports the sequences (1.86 million) and taxonomy into QIIME 2. `HeaderlessTSVTaxonomyFormat` means the taxonomy file is two columns (ID, taxonomy) with no header line
+4.  Cuts out the Leray region with `extract-reads`, using the COI primers. `--p-min-length 250` and `--p-max-length 400` keep pieces close to the 313 bp amplicon. This keeps about 554,000 sequences. Most are 313 bp; many vertebrate references are 259 bp, because their GenBank records cover only part of the region. They are kept, since they are still useful for matching fish and other vertebrates
+5.  Merges identical sequences with `qiime rescript dereplicate`, leaving about 323,000. In `--p-mode uniq`, identical sequences with different taxonomies are kept apart, so no information is lost, and the vsearch search is faster
+
+On this server, `extract-reads` takes about 18 minutes; the other steps take a few minutes each.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+refdir=../data/qiime2/reference
+mkdir -p ${refdir}/midori2
+cd ${refdir}/midori2
+
+curl -L -o MIDORI2_GB273_QIIME.zip \
+  "https://zenodo.org/api/records/22685701/files/MIDORI2_GB273_QIIME.zip/content"
+curl -L -o release_sha256.txt \
+  "https://zenodo.org/api/records/22685701/files/release_sha256.txt/content"
+
+unzip -o MIDORI2_GB273_QIIME.zip 'QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.*'
+grep 'QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME' release_sha256.txt | sha256sum -c -
+
+gunzip -c QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.fasta.gz > midori2-co1.fasta
+gunzip -c QIIME/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_QIIME.taxon.gz > midori2-co1-tax.tsv
+
+qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path midori2-co1.fasta \
+  --output-path midori2-co1-seqs.qza
+
+qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path midori2-co1-tax.tsv \
+  --output-path midori2-co1-tax.qza
+
+qiime feature-classifier extract-reads \
+  --i-sequences midori2-co1-seqs.qza \
+  --p-f-primer GGWACWGGWTGAACWGTWTAYCCYCC \
+  --p-r-primer TANACYTCNGGRTGNCCRAARAAYCA \
+  --p-min-length 250 \
+  --p-max-length 400 \
+  --p-n-jobs 32 \
+  --o-reads midori2-co1-leray-seqs.qza \
+  --o-read-extraction-stats midori2-co1-leray-extraction-stats.qza
+
+qiime rescript dereplicate \
+  --i-sequences midori2-co1-leray-seqs.qza \
+  --i-taxa midori2-co1-tax.qza \
+  --p-mode uniq \
+  --p-threads 16 \
+  --o-dereplicated-sequences ../midori2-co1-leray-seqs.qza \
+  --o-dereplicated-taxa ../midori2-co1-leray-tax.qza
+```
+
+### Make the sample metadata file
+
+QIIME 2 uses a sample metadata file to group samples in plots. This chunk writes `metadata.tsv` from both markers' manifests (`sort -u` lists each sample once). It has the sample ID and the site (`Site1` or `Site5`, the first 5 letters of the sample ID). You can add more columns later, such as date, depth or replicate.
+
+```{bash}
+outdir=../data/qiime2/eDNA-yellow_island-2023
+
+printf "sample-id\tsite\n" > ${outdir}/metadata.tsv
+tail -q -n +2 ${outdir}/V9/manifest.tsv ${outdir}/COI/manifest.tsv | cut -f1 | sort -u \
+  | awk '{print $1 "\t" substr($1, 1, 5)}' >> ${outdir}/metadata.tsv
+```
+
+### Classify 18S V9
+
+This chunk:
+
+1.  Assigns a taxonomy to each V9 ASV with the PR2 classifier (`classify-sklearn`)
+2.  Makes `taxonomy.qzv`, a table of each ASV's taxonomy and confidence (`qiime metadata tabulate`)
+3.  Makes `taxa-barplot.qzv`, showing what share of each sample's reads came from each taxon (`qiime taxa barplot`). In the viewer you can pick the taxonomic level and sort samples by site
+
+PR2 names use the ranks `d__` (domain), `sgr__` (supergroup), `dv__` (division), `dvs__` (subdivision), then class, order, family, genus and species. Over all samples, the most common groups were animals (37% of reads, mostly copepods such as *Pseudocalanus* and *Paracalanus*), Gyrista (33%, mostly diatoms), ciliates (12%) and dinoflagellates (5%). Treat species names with care: the V9 region is short, so the classifier sometimes picks a close relative. For example, *Sinocalanus sinensis* is an Asian estuarine copepod, probably standing in for a related local species.
+
+Classifying took about 1.5 minutes.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023
+refdir=../data/qiime2/reference
+
+qiime feature-classifier classify-sklearn \
+  --i-classifier ${refdir}/pr2-v9-classifier.qza \
+  --i-reads ${outdir}/V9/rep-seqs.qza \
+  --p-n-jobs 8 \
+  --o-classification ${outdir}/V9/taxonomy.qza
+
+qiime metadata tabulate \
+  --m-input-file ${outdir}/V9/taxonomy.qza \
+  --o-visualization ${outdir}/V9/taxonomy.qzv
+
+qiime taxa barplot \
+  --i-table ${outdir}/V9/table.qza \
+  --i-taxonomy ${outdir}/V9/taxonomy.qza \
+  --m-metadata-file ${outdir}/metadata.tsv \
+  --o-visualization ${outdir}/V9/taxa-barplot.qzv
+```
+
+### Classify COI
+
+This chunk matches each COI ASV against the MIDORI2 reference with vsearch, then makes the same table and bar plot as for 18S V9.
+
+-   `--p-perc-identity 0.97`: a reference must be at least 97% identical to the ASV to count as a match (see "Why COI uses vsearch at 97%" above)
+-   `--p-query-cov 0.8`: the match must cover at least 80% of the ASV
+-   `--p-maxaccepts 10 --p-top-hits-only`: collect up to 10 matches, and use only those tied for the best identity. The ASV is named to the deepest rank that more than half of them agree on (`--p-min-consensus`, default 0.51)
+-   `--o-search-results`: also saves the matches themselves (`vsearch-hits.qza`), so you can check the identity of each ASV's best match
+-   `--p-threads 32`: use 32 threads
+
+MIDORI2 names use the ranks `k__` (kingdom), `p__` (phylum), `c__`, `o__`, `f__`, `g__` and `s__`, with an NCBI taxonomy ID at the end of each name (e.g. `s__Euphausia pacifica_102976`). A few ASVs still match human DNA, which is normal low-level contamination from handling samples. A few others match land mammals, such as a hamster (*Nothocricetulus*), at 97% or more. Check these in `vsearch-hits.qza` before trusting them.
+
+On this server, classifying the 6,238 COI ASVs takes about 53 minutes with 32 threads. It names 324 of them, which make up about 4.5% of COI reads.
+
+```{bash}
+source /opt/anaconda/anaconda3/etc/profile.d/conda.sh
+conda activate qiime2-2026.7
+
+outdir=../data/qiime2/eDNA-yellow_island-2023
+refdir=../data/qiime2/reference
+
+qiime feature-classifier classify-consensus-vsearch \
+  --i-query ${outdir}/COI/rep-seqs.qza \
+  --i-reference-reads ${refdir}/midori2-co1-leray-seqs.qza \
+  --i-reference-taxonomy ${refdir}/midori2-co1-leray-tax.qza \
+  --p-perc-identity 0.97 \
+  --p-query-cov 0.8 \
+  --p-maxaccepts 10 \
+  --p-top-hits-only \
+  --p-threads 32 \
+  --o-classification ${outdir}/COI/taxonomy.qza \
+  --o-search-results ${outdir}/COI/vsearch-hits.qza
+
+qiime metadata tabulate \
+  --m-input-file ${outdir}/COI/taxonomy.qza \
+  --o-visualization ${outdir}/COI/taxonomy.qzv
+
+qiime taxa barplot \
+  --i-table ${outdir}/COI/table.qza \
+  --i-taxonomy ${outdir}/COI/taxonomy.qza \
+  --m-metadata-file ${outdir}/metadata.tsv \
+  --o-visualization ${outdir}/COI/taxa-barplot.qzv
+```

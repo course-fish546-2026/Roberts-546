@@ -1,0 +1,77 @@
+This is cutadapt 4.5 with Python 3.10.10
+Command line parameters: -g V9=^GTACACACCGCCCGTC -G V9=^TGATCCTTCTGCAGGTTCACCTAC -g COI=^GGWACWGGWTGAACWGTWTAYCCYCC -G COI=^TANACYTCNGGRTGNCCRAARAAYCA --pair-adapters --discard-untrimmed -e 0.1 -j 8 -o ../data/primer-trimmed/eDNA-yellow_island-2023/{name}/Yell_July18_Site1m_S102_R1.fastq.gz -p ../data/primer-trimmed/eDNA-yellow_island-2023/{name}/Yell_July18_Site1m_S102_R2.fastq.gz ../data/raw/eDNA-yellow_island-2023/Yell_July18_Site1m_S102_R1_001.fastq.gz ../data/raw/eDNA-yellow_island-2023/Yell_July18_Site1m_S102_R2_001.fastq.gz
+Processing paired-end reads on 8 cores ...
+Finished in 4.027 s (23.987 µs/read; 2.50 M reads/minute).
+
+=== Summary ===
+
+Total read pairs processed:            167,884
+  Read 1 with adapter:                 165,383 (98.5%)
+  Read 2 with adapter:                 165,383 (98.5%)
+
+== Read fate breakdown ==
+Pairs discarded as untrimmed:            2,501 (1.5%)
+Pairs written (passing filters):       165,383 (98.5%)
+
+Total basepairs processed:   101,066,168 bp
+  Read 1:    50,533,084 bp
+  Read 2:    50,533,084 bp
+Total written (filtered):     92,291,332 bp (91.3%)
+  Read 1:    46,588,227 bp
+  Read 2:    45,703,105 bp
+
+=== First read: Adapter V9 ===
+
+Sequence: GTACACACCGCCCGTC; Type: anchored 5'; Length: 16; Trimmed: 110665 times
+
+No. of allowed errors: 1
+
+Overview of removed sequences
+length	count	expect	max.err	error counts
+15	556	0.0	1	0 556
+16	109956	0.0	1	108257 1699
+17	153	0.0	1	0 153
+
+
+=== First read: Adapter COI ===
+
+Sequence: GGWACWGGWTGAACWGTWTAYCCYCC; Type: anchored 5'; Length: 26; Trimmed: 54718 times
+
+No. of allowed errors: 2
+
+Overview of removed sequences
+length	count	expect	max.err	error counts
+24	67	0.0	2	0 0 67
+25	818	0.0	2	0 786 32
+26	53730	0.0	2	52174 1440 116
+27	103	0.0	2	0 99 4
+
+
+=== Second read: Adapter V9 ===
+
+Sequence: TGATCCTTCTGCAGGTTCACCTAC; Type: anchored 5'; Length: 24; Trimmed: 110665 times
+
+No. of allowed errors: 2
+
+Overview of removed sequences
+length	count	expect	max.err	error counts
+22	105	0.0	2	0 0 105
+23	874	0.0	2	0 657 217
+24	109429	0.0	2	86519 22346 564
+25	255	0.0	2	0 223 32
+26	2	0.0	2	0 0 2
+
+
+=== Second read: Adapter COI ===
+
+Sequence: TANACYTCNGGRTGNCCRAARAAYCA; Type: anchored 5'; Length: 26; Trimmed: 54718 times
+
+No. of allowed errors: 2
+
+Overview of removed sequences
+length	count	expect	max.err	error counts
+24	27	0.0	2	0 0 27
+25	728	0.0	2	0 564 164
+26	53807	0.0	2	37012 16054 741
+27	155	0.0	2	0 123 32
+28	1	0.0	2	0 0 1

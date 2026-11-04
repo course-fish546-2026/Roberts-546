@@ -1,0 +1,141 @@
+# Note: Individual distributions can be extracted using the `stacks-dist-extract` utility.
+#       e.g. `stacks-dist-extract populations.log.distribs dist_name`
+
+BEGIN batch_progress
+# Batch 1: analyzed 285 loci; filtered 15 loci; 300 loci seen.
+    Calculating F statistics...done.
+END batch_progress
+
+BEGIN samples_per_loc_prefilters
+# Distribution of valid samples matched to a catalog locus prior to filtering.
+n_samples	n_loci
+14	1
+15	1
+16	6
+17	30
+18	67
+19	106
+20	89
+END samples_per_loc_prefilters
+
+BEGIN missing_samples_per_loc_prefilters
+# Distribution of missing samples for each catalog locus prior to filtering.
+Absent samples at locus	Count
+0	89
+1	106
+2	67
+3	30
+4	6
+5	1
+6	1
+END missing_samples_per_loc_prefilters
+
+BEGIN snps_per_loc_prefilters
+# Distribution of the number of SNPs per catalog locus prior to filtering.
+n_snps	n_loci
+0	73
+1	185
+2	42
+END snps_per_loc_prefilters
+
+BEGIN samples_per_loc_postfilters
+# Distribution of valid samples matched to a catalog locus after filtering.
+n_samples	n_loci
+16	1
+17	22
+18	67
+19	106
+20	89
+END samples_per_loc_postfilters
+
+BEGIN missing_samples_per_loc_postfilters
+# Distribution of missing samples for each catalog locus after filtering.
+Absent samples at locus	Count
+0	89
+1	106
+2	67
+3	22
+4	1
+END missing_samples_per_loc_postfilters
+
+BEGIN snps_per_loc_postfilters
+# Distribution of the number of SNPs per catalog locus (after filtering).
+n_snps	n_loci
+0	72
+1	213
+END snps_per_loc_postfilters
+
+BEGIN loci_per_sample_prefilters
+# Number of loci per individual sample (before filtering).
+sample	n_loci	present_loci	missing_loci	frequency_missing
+PB_01	300	289	11	0.0367
+PB_02	300	285	15	0.0500
+PB_03	300	283	17	0.0567
+PB_04	300	282	18	0.0600
+PB_05	300	282	18	0.0600
+PB_06	300	280	20	0.0667
+PB_07	300	278	22	0.0733
+PB_08	300	281	19	0.0633
+PB_09	300	285	15	0.0500
+PB_10	300	279	21	0.0700
+SJ_01	300	285	15	0.0500
+SJ_02	300	286	14	0.0467
+SJ_03	300	276	24	0.0800
+SJ_04	300	284	16	0.0533
+SJ_05	300	281	19	0.0633
+SJ_06	300	283	17	0.0567
+SJ_07	300	275	25	0.0833
+SJ_08	300	278	22	0.0733
+SJ_09	300	275	25	0.0833
+SJ_10	300	288	12	0.0400
+END loci_per_sample_prefilters
+
+BEGIN loci_per_sample
+# Number of loci per individual sample (after filtering).
+sample	n_loci	present_loci	missing_loci	frequency_missing
+PB_01	285	275	10	0.0351
+PB_02	285	272	13	0.0456
+PB_03	285	269	16	0.0561
+PB_04	285	270	15	0.0526
+PB_05	285	269	16	0.0561
+PB_06	285	269	16	0.0561
+PB_07	285	264	21	0.0737
+PB_08	285	269	16	0.0561
+PB_09	285	272	13	0.0456
+PB_10	285	269	16	0.0561
+SJ_01	285	273	12	0.0421
+SJ_02	285	272	13	0.0456
+SJ_03	285	265	20	0.0702
+SJ_04	285	273	12	0.0421
+SJ_05	285	270	15	0.0526
+SJ_06	285	269	16	0.0561
+SJ_07	285	264	21	0.0737
+SJ_08	285	265	20	0.0702
+SJ_09	285	265	20	0.0702
+SJ_10	285	276	9	0.0316
+END loci_per_sample
+
+BEGIN variant_sites_per_sample
+# Number of variant sites per individual sample (after filtering).
+sample	n_sites	present_sites	missing_sites	frequency_missing
+PB_01	213	207	6	0.0282
+PB_02	213	203	10	0.0469
+PB_03	213	200	13	0.0610
+PB_04	213	205	8	0.0376
+PB_05	213	201	12	0.0563
+PB_06	213	201	12	0.0563
+PB_07	213	195	18	0.0845
+PB_08	213	200	13	0.0610
+PB_09	213	203	10	0.0469
+PB_10	213	200	13	0.0610
+SJ_01	213	204	9	0.0423
+SJ_02	213	203	10	0.0469
+SJ_03	213	197	16	0.0751
+SJ_04	213	207	6	0.0282
+SJ_05	213	200	13	0.0610
+SJ_06	213	200	13	0.0610
+SJ_07	213	194	19	0.0892
+SJ_08	213	197	16	0.0751
+SJ_09	213	198	15	0.0704
+SJ_10	213	206	7	0.0329
+END variant_sites_per_sample
