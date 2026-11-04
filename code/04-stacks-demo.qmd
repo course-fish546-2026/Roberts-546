@@ -448,6 +448,132 @@ truth <- read_tsv("../data/stacks-demo/truth_snps.tsv", show_col_types = FALSE)
 count(truth, type)
 ```
 
+## Visualize population differences
+
+F~ST~ is one number per SNP. To see how the *plants* group, we can look at all SNPs at once. The chunks below use the VCF from `populations` (`populations.snps.vcf`, one SNP per locus because of `--write-single-snp`).
+
+### Read the VCF into a genotype matrix
+
+Each genotype in the VCF looks like `0/1:15:9,6:40:...`. Only the first field (`GT`) is needed. This chunk converts it to the number of ALT alleles each plant carries: `0/0` → 0, `0/1` → 1, `1/1` → 2, and `./.` (missing) → `NA`. The result is a matrix with one row per plant and one column per SNP.
+
+The chunk only needs `readr`/`dplyr`/`tidyr`, so no extra packages (like `vcfR` or `adegenet`) have to be installed.
+
+```{r}
+library(tidyr)
+
+vcf_file <- "../output/04-stacks-demo/populations/populations.snps.vcf"
+popmap   <- read_tsv("../data/stacks-demo/popmap.tsv", col_names = c("sample", "pop"),
+                     show_col_types = FALSE)
+
+# the "#CHROM ..." line holds the column names; lines starting with "##" are metadata
+vcf_lines  <- readLines(vcf_file)
+vcf_header <- vcf_lines[grepl("^#CHROM", vcf_lines)] |> str_remove("^#") |> str_split("\t") |> pluck(1)
+vcf <- read_tsv(vcf_file, comment = "#", col_names = vcf_header,
+                col_types = cols(.default = "c"))
+
+gt_to_count <- function(x) {
+  gt <- str_extract(x, "^[^:]+")                   # keep only the GT field
+  case_when(gt %in% c("0/0", "0|0") ~ 0,
+            gt %in% c("0/1", "1/0", "0|1", "1|0") ~ 1,
+            gt %in% c("1/1", "1|1") ~ 2,
+            TRUE ~ NA_real_)
+}
+
+samples <- setdiff(vcf_header, c("CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT"))
+
+geno <- vcf |>
+  mutate(across(all_of(samples), gt_to_count)) |>
+  select(ID, all_of(samples))
+
+geno_mat <- t(as.matrix(geno[, samples]))          # rows = plants, columns = SNPs
+colnames(geno_mat) <- geno$ID
+
+dim(geno_mat)
+cat("Missing genotypes:", round(mean(is.na(geno_mat)) * 100, 1), "%\n")
+```
+
+### PCA of all SNPs
+
+Principal component analysis (PCA) finds the directions (PCs) along which the plants differ most across all SNPs. If PB and SJ are genetically different, plants from the same population should cluster together and the two clusters should separate along PC1.
+
+PCA cannot use missing values, so each missing genotype is replaced with that SNP's mean (a common, simple fix). SNPs with no variation are dropped because they carry no information and would break scaling.
+
+```{r}
+impute_mean <- function(m) {
+  apply(m, 2, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); x })
+}
+
+run_pca <- function(m) {
+  m <- impute_mean(m)
+  m <- m[, apply(m, 2, var) > 0, drop = FALSE]    # drop monomorphic SNPs
+  pca <- prcomp(m, center = TRUE, scale. = TRUE)
+  var_exp <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
+  scores <- as_tibble(pca$x[, 1:2], rownames = "sample") |> left_join(popmap, by = "sample")
+  list(scores = scores, var_exp = var_exp, n_snps = ncol(m))
+}
+
+plot_pca <- function(res, title) {
+  ggplot(res$scores, aes(PC1, PC2, color = pop, label = sample)) +
+    geom_point(size = 3) +
+    geom_text(size = 2.5, vjust = -1, show.legend = FALSE) +
+    scale_color_manual(values = c(PB = "darkgreen", SJ = "steelblue")) +
+    labs(x = paste0("PC1 (", res$var_exp[1], "%)"),
+         y = paste0("PC2 (", res$var_exp[2], "%)"),
+         color = "Population",
+         title = title,
+         subtitle = paste(res$n_snps, "SNPs")) +
+    theme_minimal()
+}
+
+pca_all <- run_pca(geno_mat)
+plot_pca(pca_all, "PCA of all SNPs")
+```
+
+### PCA without the high-F~ST~ SNPs
+
+In the simulation only ~10% of SNPs were set up to differ between populations. This chunk removes the 10% of SNPs with the highest F~ST~ and runs the PCA again. If the separation in the first PCA came mostly from those outlier SNPs, PB and SJ should now overlap. This is a quick way to ask whether population structure is genome-wide or driven by a few loci (for example, loci under selection).
+
+The VCF `ID` column is `<locus>:<column>`, so the locus number before the `:` matches `Locus.ID` in the F~ST~ table.
+
+```{r}
+fst_by_id <- fst |>
+  mutate(ID = paste0(Locus.ID, ":", Column)) |>
+  select(ID, AMOVA.Fst)
+
+cutoff <- quantile(fst_by_id$AMOVA.Fst, 0.90, na.rm = TRUE)
+outlier_ids <- fst_by_id |> filter(AMOVA.Fst >= cutoff) |> pull(ID)
+cat(length(outlier_ids), "SNPs with Fst >=", round(cutoff, 3), "removed\n")
+
+pca_neutral <- run_pca(geno_mat[, !colnames(geno_mat) %in% outlier_ids])
+plot_pca(pca_neutral, "PCA without the top 10% Fst SNPs")
+```
+
+### Genotypes at the most differentiated SNPs
+
+A heatmap shows the actual genotypes behind the F~ST~ values. Each row is a plant (grouped by population) and each column is one of the 25 SNPs with the highest F~ST~. At outlier SNPs, expect most PB plants to have one genotype and most SJ plants the other. Grey tiles are missing genotypes.
+
+```{r}
+top_ids <- fst_by_id |> arrange(desc(AMOVA.Fst)) |> slice_head(n = 25) |> pull(ID)
+
+geno_long <- as_tibble(geno_mat[, top_ids], rownames = "sample") |>
+  pivot_longer(-sample, names_to = "ID", values_to = "alt_count") |>
+  left_join(popmap, by = "sample") |>
+  mutate(ID = factor(ID, levels = top_ids),
+         sample = factor(sample, levels = rev(popmap$sample)),
+         alt_count = factor(alt_count, levels = 0:2,
+                            labels = c("0 (REF/REF)", "1 (REF/ALT)", "2 (ALT/ALT)")))
+
+ggplot(geno_long, aes(ID, sample, fill = alt_count)) +
+  geom_tile(color = "white") +
+  facet_grid(pop ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_manual(values = c("#f7fcb9", "#78c679", "#006837"), na.value = "grey80",
+                    name = "ALT alleles") +
+  labs(x = "SNP (locus:column), highest Fst on the left", y = NULL,
+       title = "Genotypes at the 25 most differentiated SNPs") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 7))
+```
+
 ## Next steps with real data
 
 -   **Tune `-M` and `-n`.** Run Steps 3--8 several times with `-M` (and `-n`) from 1 to about 8. Pick the value after which the number of polymorphic loci found in 80% of samples stops going up (the "r80" method; Paris et al. 2017).
