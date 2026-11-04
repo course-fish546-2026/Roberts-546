@@ -1,7 +1,6 @@
 # Raw data are never committed. Record source and checksums in data/README.md.
 data/raw/*
 !data/raw/.gitkeep
-
 # Quarto / R
 /.quarto/
 *_files/
@@ -10,35 +9,29 @@ data/raw/*
 .Rhistory
 .RData
 *.quarto_ipynb
-
 # OS
 .DS_Store
 Thumbs.db
-
 **/*.quarto_ipynb
-
 # Large derived reads (regenerate from code/03-eDNA.qmd)
 data/trimmed/**/*.fastq.gz
 data/primer-trimmed/**/*.fastq.gz
 data/trimmed-qc/**/*.fastq.gz
 **/multiqc_data/
 **/*_multiqc_report_data/
-
 # Stray R graphics device output
 Rplots.pdf
 data/qiime2/**/demux.qza
 data/qiime2/reference/
-
 # 03.1-eDNA: imported reads and reference databases (large; regenerate from code/03.1-eDNA.qmd)
 output/03.1-eDNA/*demux.qza
 data/reference/
-
 # Large QIIME 2 read artifacts (regenerate from the code/03.x-eDNA.qmd pages)
 output/**/*demux.qza
-
 # 05-eelgrass-stacks: large reads/alignments/Stacks intermediates (regenerate from code/05-eelgrass-stacks.qmd)
 output/05-eelgrass-stacks/trimmed/*.fq.gz
 output/05-eelgrass-stacks/bam/
 output/05-eelgrass-stacks/gstacks/catalog.*
 output/05-eelgrass-stacks/denovo/clean/
 output/05-eelgrass-stacks/denovo/stacks/
+.claude
