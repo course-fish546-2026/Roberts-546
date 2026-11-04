@@ -1,0 +1,323 @@
+---
+title: "Week 05 — Annotation and genomic ranges"
+author: "Steven Roberts"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: false
+    embed-resources: true
+editor:
+  markdown:
+    wrap: 72
+---
+
+```{=html}
+<!--
+Before you push, check:
+  [ ] this .qmd AND its rendered .html are both committed
+  [ ] rendered from a clean session (Session > Restart R, then Render)
+  [ ] paths are relative, not absolute: from notebooks/, use ../ (e.g. ../output/weekNN/)
+  [ ] tables and figures are saved under output/weekNN/, not only printed here
+  [ ] nothing under data/raw/ is committed
+  [ ] software, platform, and container/environment are named
+  [ ] the commit link is posted as a comment on your Project Proposal issue
+Rubric: https://sr320.github.io/course-fish546-2026/how-we-work.html#weekly-entry-rubric
+-->
+```
+
+## 1. This week's analysis
+
+Worked example from [Week 05: Annotation and genomic
+ranges](https://sr320.github.io/course-fish546-2026/assignments/05-annotation-ranges.html).
+I locate two fish 12S eDNA primer pairs (MiFish-U and Riaz 12S) on the
+Chinook salmon (*Oncorhynchus tshawytscha*) mitogenome and use the NCBI
+annotation to find out which gene each amplicon falls in.
+
+**Platform:** laptop (macOS). **Software:** R with Bioconductor
+`Biostrings` and `GenomicRanges`; package versions are printed by
+`sessionInfo()` at the end of this section.
+
+**Outputs:**
+
+-   [`output/week05/amplicon-annotation.csv`](../output/week05/amplicon-annotation.csv)
+-   [`output/week05/amplicons.bed`](../output/week05/amplicons.bed)
+
+### 1.1 Setup and download
+
+```{r}
+#| label: setup
+#| message: false
+# Install once if needed (not run on every render):
+# if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+# BiocManager::install(c("Biostrings", "GenomicRanges"))
+
+library(Biostrings)
+library(GenomicRanges)
+
+data_dir <- "../data/week05"
+out_dir  <- "../output/week05"
+dir.create(data_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_dir,  recursive = TRUE, showWarnings = FALSE)
+
+accession <- "NC_002980.1"   # genome build = accession + version
+fasta_file <- file.path(data_dir, paste0(accession, ".fasta"))
+gff_file   <- file.path(data_dir, paste0(accession, ".gff3"))
+
+if (!file.exists(fasta_file)) {
+  download.file(
+    paste0("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?",
+           "db=nuccore&rettype=fasta&retmode=text&id=", accession),
+    fasta_file, quiet = TRUE)
+}
+if (!file.exists(gff_file)) {
+  download.file(
+    paste0("https://www.ncbi.nlm.nih.gov/sviewer/viewer.cgi?",
+           "db=nuccore&report=gff3&id=", accession),
+    gff_file, quiet = TRUE)
+}
+
+genome <- readDNAStringSet(fasta_file)
+names(genome)
+width(genome)   # expect 16,644 bp, one circular sequence
+
+# Use the bare accession.version as the sequence name so it matches GFF column 1
+names(genome) <- accession
+chinook <- genome[[1]]
+```
+
+### 1.2 Read the GFF
+
+GFF3 is nine tab-separated columns, **1-based and inclusive** on both
+ends.
+
+```{r}
+#| label: read-gff
+gff_cols <- c("seqid", "source", "type", "start", "end",
+              "score", "strand", "phase", "attributes")
+gff <- read.delim(gff_file, header = FALSE, comment.char = "#",
+                  col.names = gff_cols, quote = "", stringsAsFactors = FALSE)
+
+table(gff$type)
+
+keep_types <- c("rRNA", "tRNA", "CDS", "D_loop")
+feat <- gff[gff$type %in% keep_types, ]
+
+# Pull product= out of the attributes column (URL-decode e.g. %2C)
+get_attr <- function(x, key) {
+  m <- regmatches(x, regexpr(paste0("(?<=", key, "=)[^;]+"), x, perl = TRUE))
+  out <- rep(NA_character_, length(x))
+  out[grepl(paste0(key, "="), x)] <- m
+  vapply(out, function(s) if (is.na(s)) NA_character_ else URLdecode(s),
+         character(1), USE.NAMES = FALSE)
+}
+feat$product <- get_attr(feat$attributes, "product")
+feat$product[feat$type == "D_loop"] <- "control region (D-loop)"
+
+head(feat[, c("type", "start", "end", "strand", "product")], 10)
+```
+
+### 1.3 Build genomic ranges
+
+`GRanges` is also **1-based, inclusive**, so GFF coordinates go in
+unchanged.
+
+```{r}
+#| label: granges
+features_gr <- GRanges(
+  seqnames = feat$seqid,
+  ranges   = IRanges(start = feat$start, end = feat$end),
+  strand   = feat$strand,
+  type     = feat$type,
+  product  = feat$product
+)
+seqlengths(features_gr) <- setNames(length(chinook), accession)
+isCircular(features_gr) <- setNames(TRUE, accession)
+
+features_gr
+table(features_gr$type)
+```
+
+### 1.4 Locate primers
+
+Forward primers match the plus strand as written; reverse primers are
+written 5'→3' on the minus strand, so I search for their reverse
+complement. Up to 2 mismatches allowed.
+
+```{r}
+#| label: primers
+primers <- data.frame(
+  marker  = c("MiFish-U", "Riaz 12S"),
+  forward = c("GTCGGTAAAACTCGTGCCAGC", "ACTGGGATTAGATACCCC"),
+  reverse = c("CATAGTGGGGTATCTAATCCCAGTTTG", "TAGAACAGGCTCCTCTAG")
+)
+
+find_amplicon <- function(fwd, rev, subject, max_mm = 2, fixed = TRUE) {
+  f_hit <- matchPattern(DNAString(fwd), subject,
+                        max.mismatch = max_mm, fixed = fixed)
+  r_hit <- matchPattern(reverseComplement(DNAString(rev)), subject,
+                        max.mismatch = max_mm, fixed = fixed)
+  stopifnot(length(f_hit) == 1, length(r_hit) == 1)
+  data.frame(fwd_start = start(f_hit), fwd_end = end(f_hit),
+             rev_start = start(r_hit), rev_end = end(r_hit),
+             amp_start = start(f_hit), amp_end = end(r_hit))
+}
+
+amp_tab <- do.call(rbind, lapply(seq_len(nrow(primers)), function(i)
+  cbind(marker = primers$marker[i],
+        find_amplicon(primers$forward[i], primers$reverse[i], chinook))))
+amp_tab$length_bp <- amp_tab$amp_end - amp_tab$amp_start + 1
+amp_tab
+# Expected: MiFish-U 1,279-1,496 (218 bp); Riaz 12S 1,473-1,614 (142 bp)
+
+amplicons_gr <- GRanges(
+  seqnames = accession,
+  ranges   = IRanges(amp_tab$amp_start, amp_tab$amp_end),
+  strand   = "+",
+  marker   = amp_tab$marker
+)
+amplicons_gr
+```
+
+### 1.5 Annotate amplicons by overlap
+
+```{r}
+#| label: overlap
+hits <- findOverlaps(amplicons_gr, features_gr, ignore.strand = TRUE)
+
+annot <- data.frame(
+  marker        = amplicons_gr$marker[queryHits(hits)],
+  amp_start     = start(amplicons_gr)[queryHits(hits)],
+  amp_end       = end(amplicons_gr)[queryHits(hits)],
+  feature_type  = features_gr$type[subjectHits(hits)],
+  product       = features_gr$product[subjectHits(hits)],
+  feature_start = start(features_gr)[subjectHits(hits)],
+  feature_end   = end(features_gr)[subjectHits(hits)],
+  feature_strand = as.character(strand(features_gr))[subjectHits(hits)]
+)
+annot
+
+write.csv(annot, file.path(out_dir, "amplicon-annotation.csv"),
+          row.names = FALSE)
+
+# Is each amplicon fully contained in its feature?
+within <- findOverlaps(amplicons_gr, features_gr, type = "within",
+                       ignore.strand = TRUE)
+data.frame(marker  = amplicons_gr$marker[queryHits(within)],
+           within  = features_gr$product[subjectHits(within)])
+
+# How much do the two amplicons overlap?
+ov <- pintersect(amplicons_gr[1], amplicons_gr[2])
+ov
+width(ov)
+```
+
+### 1.6 Export BED
+
+BED is **0-based, half-open**: subtract 1 from the start, keep the end.
+This shift is the most common coordinate bug in genomics.
+
+```{r}
+#| label: bed
+bed <- data.frame(
+  chrom      = as.character(seqnames(amplicons_gr)),
+  chromStart = start(amplicons_gr) - 1,
+  chromEnd   = end(amplicons_gr),
+  name       = amplicons_gr$marker,
+  score      = 0,
+  strand     = as.character(strand(amplicons_gr))
+)
+bed
+
+write.table(bed, file.path(out_dir, "amplicons.bed"), sep = "\t",
+            quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Sanity check: BED length (end - start) equals GRanges width
+stopifnot(all(bed$chromEnd - bed$chromStart == width(amplicons_gr)))
+```
+
+### 1.7 Optional extension: Leray COI
+
+The Leray primers contain IUPAC ambiguity codes (W, Y, R, N), so the
+search uses `fixed = FALSE` to let them match any of their bases. I step
+up the mismatch allowance until the forward primer matches.
+
+```{r}
+#| label: leray
+leray_f <- "GGWACWGGWTGAACWGTWTAYCCYCC"
+leray_r <- "TANACYTCNGGRTGNCCRAARAAYCA"
+
+for (mm in 0:5) {
+  n <- length(matchPattern(DNAString(leray_f), chinook,
+                           max.mismatch = mm, fixed = FALSE))
+  cat("forward, max.mismatch =", mm, "->", n, "hit(s)\n")
+  if (n > 0) { leray_mm <- mm; break }
+}
+
+leray_rev_hits <- matchPattern(reverseComplement(DNAString(leray_r)), chinook,
+                               max.mismatch = leray_mm, fixed = FALSE)
+leray_rev_hits
+
+leray_amp <- find_amplicon(leray_f, leray_r, chinook,
+                           max_mm = leray_mm, fixed = FALSE)
+leray_amp$length_bp <- leray_amp$amp_end - leray_amp$amp_start + 1
+leray_amp
+
+leray_gr <- GRanges(accession, IRanges(leray_amp$amp_start, leray_amp$amp_end))
+leray_hits <- findOverlaps(leray_gr, features_gr, ignore.strand = TRUE)
+features_gr[subjectHits(leray_hits)]
+```
+
+### 1.8 What to write
+
+1.  **Accession and coordinate conventions.** I used `NC_002980.1`
+    (accession + version 1). GFF3 is 1-based, inclusive; `GRanges` is
+    1-based, inclusive (so GFF coordinates load unchanged); BED is
+    0-based, half-open (start − 1, end unchanged).
+2.  **Which gene, and how much overlap?** Both amplicons sit entirely
+    within the 12S ribosomal RNA gene (1,055–2,001): MiFish-U at
+    1,279–1,496 (218 bp) and Riaz 12S at 1,473–1,614 (142 bp). They
+    overlap by `r width(ov)` bp (positions `r start(ov)`–`r end(ov)`),
+    which is essentially where the MiFish-U reverse primer and the Riaz
+    forward primer sit. So the two markers read mostly different,
+    adjacent stretches of 12S, with Riaz 12S further 3'. *Extension:* the
+    Leray COI forward primer needs 4 mismatches (even with IUPAC codes)
+    before it hits Chinook; the amplicon is 6,821–7,185 (365 bp), inside
+    cytochrome c oxidase subunit I (6,455–8,005).
+3.  **What this shows and doesn't.** It shows where these primer
+    sequences land on one Chinook reference mitogenome and which
+    annotated gene those coordinates sit in. It doesn't show that the
+    primers amplify in practice, how well they match other salmonids or
+    other Chinook haplotypes (one reference, ≤2 mismatches is a string
+    search, not PCR), or that the amplicon region discriminates species.
+    Those need other genomes, alignments, or wet-lab data.
+
+**Mid-quarter update (Thu Nov 5):** *link to slides / rendered notebook
+here once committed.*
+
+```{r}
+#| label: session
+sessionInfo()
+```
+
+## 2. Reflection questions
+
+<!-- The 2–3 questions from this week's lecture page, answered with reasoning. -->
+
+1.
+2.
+3.
+
+## 3. Project progress
+
+<!-- What moved this week, with links to commits, files, or figures. -->
+
+## 4. Where I'm stuck
+
+<!-- Specific problems, what you tried, and any linked Help Request. Or "none". -->
+
+## 5. Next week
+
+<!-- One to three concrete, one-week-sized goals. -->
+
+-
