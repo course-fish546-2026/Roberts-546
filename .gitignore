@@ -35,3 +35,10 @@ data/reference/
 
 # Large QIIME 2 read artifacts (regenerate from the code/03.x-eDNA.qmd pages)
 output/**/*demux.qza
+
+# 05-eelgrass-stacks: large reads/alignments/Stacks intermediates (regenerate from code/05-eelgrass-stacks.qmd)
+output/05-eelgrass-stacks/trimmed/*.fq.gz
+output/05-eelgrass-stacks/bam/
+output/05-eelgrass-stacks/gstacks/catalog.*
+output/05-eelgrass-stacks/denovo/clean/
+output/05-eelgrass-stacks/denovo/stacks/

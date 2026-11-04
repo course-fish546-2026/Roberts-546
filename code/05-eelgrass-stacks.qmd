@@ -1,0 +1,387 @@
+---
+title: "05-eelgrass-stacks"
+editor: visual
+execute:
+  eval: false
+---
+
+## About this document
+
+This is a **draft** Stacks pipeline for the real eelgrass (*Zostera marina*) RAD-seq data in Grant Christian's project (the `Christian-546` repo). It follows the same steps as `04-stacks-demo.qmd`, but on real reads instead of simulated ones.
+
+What we know about the data (from `Christian-546/code/project_analysis.qmd` and its `fastp.json`):
+
+-   Reads are **already demultiplexed**: one FASTQ per plant in `data/raw/project_data/fastq_reads/`, named like `NA0106.1.fq` (`.1` = read 1).
+-   **Single-end, 137 bp** Illumina reads. Quality is good (Q30 ≈ 90% for `NA0106`, \~534 k reads).
+-   The first **6 bp** of each read is the restriction cut-site remnant, which Christian trimmed with `fastp -f 6`.
+-   The reference genome is `Zmarina_668_v2.0.fa` (in the same `project_data/` folder).
+-   The study design is **4 populations**: perennial vs. annual plants at the north vs. south end of a Washington bay. The endpoint is a **PCA** of those four groups.
+
+Because a reference genome exists, the main path here is **reference-based** Stacks: trim → align with `bwa mem` → `gstacks` → `populations`. A de novo alternative is sketched at the end for comparison.
+
+**All chunks are `eval: false`.** Run them by hand on Raven, from the `code/` folder, in order. Things that still need a decision are marked **TODO**.
+
+### The steps
+
+| Step | Program              | What it does                                                          |
+|------|----------------------|-----------------------------------------------------------------------|
+| 0    | bash                 | Link the raw reads and genome into `data/raw/`, check them           |
+| 1    | bash                 | Make the population map (sample → population)                        |
+| 2    | `fastp`              | Trim the cut-site remnant and low-quality tails from every sample     |
+| 3    | `bwa index`/`bwa mem` | Index the genome, align each plant's reads                           |
+| 4    | `samtools`           | Sort and index BAMs, check mapping rate per sample                    |
+| 5    | `gstacks`            | Build RAD loci from the alignments and call SNPs/genotypes            |
+| 6    | `populations`        | Filter loci, compute F~ST~ / diversity, export VCF / PLINK / GenePop  |
+| 7    | R                    | Per-sample missingness and PCA of the four populations                |
+
+## Set paths
+
+Each Quarto bash chunk is a new shell, so paths go in an env file that every chunk `source`s (same trick as in `04-stacks-demo.qmd`).
+
+**TODO:** set `SRC` to where Christian's `project_data/` folder actually lives on Raven. The value below assumes both repos are cloned side by side in `~/GitHub/`.
+
+```{bash}
+mkdir -p ../output/05-eelgrass-stacks
+
+cat > ../output/05-eelgrass-stacks/eelgrass.env << 'EOF'
+# Source of the raw data (Christian's copy on Raven) -- TODO: confirm
+SRC=$HOME/GitHub/Christian-546/data/raw/project_data
+
+# Inside this repo
+RAW=../data/raw/eelgrass-radseq
+OUT=../output/05-eelgrass-stacks
+GENOME=$RAW/Zmarina_668_v2.0.fa
+POPMAP=$OUT/popmap.tsv
+
+# Software on Raven
+STACKS=/home/shared/stacks-2.68
+FASTP=/home/shared/fastp
+BWA=bwa
+SAMTOOLS=samtools
+THREADS=16
+EOF
+
+cat ../output/05-eelgrass-stacks/eelgrass.env
+```
+
+## Step 0: Bring in and check the data
+
+Raw data are never copied into git. This chunk makes **symbolic links** in `data/raw/eelgrass-radseq/` (which `.gitignore` already excludes) that point at Christian's files, so nothing large is duplicated.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+mkdir -p $RAW/fastq_reads
+
+ln -sf $SRC/Zmarina_668_v2.0.fa $RAW/
+ln -sf $SRC/fastq_reads/*.fq    $RAW/fastq_reads/
+
+ls -lh $RAW | head
+ls $RAW/fastq_reads | head
+echo "Number of FASTQ files: $(ls $RAW/fastq_reads/*.fq | wc -l)"
+```
+
+Is the data really single-end? If every sample has only a `.1.fq` file, yes. If some have `.2.fq` too, the trimming and alignment steps below need to be switched to paired-end.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+
+ls $RAW/fastq_reads | sed -E 's/.*\.([12])\.fq(\.gz)?$/read \1/' | sort | uniq -c
+```
+
+Record checksums for `data/README.md`, and count reads per sample. Plants with very few reads will end up with lots of missing genotypes and are candidates to drop.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+
+md5sum $GENOME $RAW/fastq_reads/*.fq > $OUT/raw-checksums.txt
+head -3 $OUT/raw-checksums.txt
+
+for fq in $RAW/fastq_reads/*.fq; do
+  printf "%s\t%d\n" "$(basename $fq .1.fq)" $(( $(wc -l < $fq) / 4 ))
+done | sort -k2,2n > $OUT/reads_per_sample.tsv
+
+echo "Fewest reads:"; head -5 $OUT/reads_per_sample.tsv
+echo "Most reads:";   tail -5 $OUT/reads_per_sample.tsv
+```
+
+### Which enzyme?
+
+Every read should start with the same few bases (what is left of the restriction site). Tabulating the first 6 bases of one sample shows what that motif is, which tells us the enzyme. For example, `TGCAGG` = SbfI, `CATGC` = SphI, `AATTC` = EcoRI, `CATG` = NlaIII. This matters for the de novo path (`process_radtags -e`) and for the methods section.
+
+**TODO:** confirm the enzyme and library prep with whoever made the libraries.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+
+fq=$(ls $RAW/fastq_reads/*.fq | head -1)
+awk 'NR % 4 == 2 {print substr($0, 1, 6)}' $fq | head -200000 | sort | uniq -c | sort -k1,1nr | head
+```
+
+## Step 1: Population map
+
+Stacks needs a tab-separated **popmap**: `sample<TAB>population`, one plant per line. The sample name must match the BAM file name (`NA0106` ↔ `NA0106.bam`).
+
+This chunk writes a template with every sample and `NA` as the population. **TODO:** fill in the population for each plant, using four labels such as `N_per`, `N_ann`, `S_per`, `S_ann` (north/south × perennial/annual), and save it as `popmap.tsv`. Leaving a sample out of `popmap.tsv` is also the way to drop it from the analysis.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+
+for fq in $RAW/fastq_reads/*.1.fq; do
+  printf "%s\tNA\n" "$(basename $fq .1.fq)"
+done > $OUT/popmap_template.tsv
+
+wc -l $OUT/popmap_template.tsv
+head $OUT/popmap_template.tsv
+```
+
+After editing, check that every population has a sensible number of plants and that no `NA` is left:
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+
+cut -f2 $POPMAP | sort | uniq -c
+grep -c -w NA $POPMAP || true
+```
+
+## Step 2: Trim reads with `fastp`
+
+Same idea as Christian's single-sample test, applied to every plant:
+
+-   `-f 6`: remove the first 6 bases (the cut-site remnant). For reference-based analysis this is optional, since `bwa mem` would soft-clip it, but it keeps the reads clean and matches Christian's QC.
+-   `-l 50`: drop reads shorter than 50 bp after trimming (too short to map uniquely).
+-   `--cut_tail -M 20`: trim low-quality bases off the 3′ end.
+-   Adapter trimming is on by default for single-end reads (fastp detects the adapter).
+
+Each sample gets an HTML and JSON report. If `multiqc` is on your path, it rolls them into one page.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+mkdir -p $OUT/trimmed
+
+for fq in $RAW/fastq_reads/*.1.fq; do
+  s=$(basename $fq .1.fq)
+  $FASTP \
+    -i $fq \
+    -o $OUT/trimmed/${s}.fq.gz \
+    -f 6 -l 50 \
+    --cut_tail -M 20 \
+    -w 8 \
+    -h $OUT/trimmed/${s}_fastp.html \
+    -j $OUT/trimmed/${s}_fastp.json \
+    2> $OUT/trimmed/${s}_fastp.log
+done
+
+ls $OUT/trimmed/*.fq.gz | wc -l
+multiqc $OUT/trimmed -o $OUT/trimmed/multiqc || echo "multiqc not found; look at the per-sample HTML reports"
+```
+
+## Step 3: Align to the eelgrass genome with `bwa mem`
+
+First index the genome (only needed once; it writes `.amb .ann .bwt .pac .sa` files next to the FASTA). The symlinked FASTA lives in `data/raw/`, so the index files land there too and are not committed.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+
+$BWA index $GENOME
+$SAMTOOLS faidx $GENOME
+```
+
+Then align each plant, sort, and index. Compared with Christian's test chunk, this:
+
+-   adds a **read group** (`-R`) with the sample name, which other tools (GATK, `bcftools`) rely on;
+-   does **not** filter on mapping quality here: `gstacks` applies its own filter (`--min-mapq`, default 10), so we keep everything and decide later;
+-   writes one `<sample>.bam` per plant, which is the naming `gstacks -I` expects.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+mkdir -p $OUT/bam
+
+while IFS=$'\t' read -r s pop; do
+  $BWA mem -t $THREADS \
+    -R "@RG\tID:${s}\tSM:${s}\tPL:ILLUMINA" \
+    $GENOME $OUT/trimmed/${s}.fq.gz \
+  | $SAMTOOLS sort -@ 4 -o $OUT/bam/${s}.bam -
+  $SAMTOOLS index $OUT/bam/${s}.bam
+done < $POPMAP
+
+ls $OUT/bam/*.bam | wc -l
+```
+
+## Step 4: Check mapping per sample
+
+A low mapping rate can mean contamination, a mislabeled sample, or a sample from a different species. Expect most reads to map (eelgrass to its own genome).
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+
+printf "sample\ttotal\tmapped\tpct_mapped\tmapq20\n" > $OUT/mapping_summary.tsv
+while IFS=$'\t' read -r s pop; do
+  total=$($SAMTOOLS view -c -F 0x900 $OUT/bam/${s}.bam)
+  mapped=$($SAMTOOLS view -c -F 0x904 $OUT/bam/${s}.bam)
+  q20=$($SAMTOOLS view -c -F 0x904 -q 20 $OUT/bam/${s}.bam)
+  awk -v s=$s -v t=$total -v m=$mapped -v q=$q20 \
+    'BEGIN {printf "%s\t%d\t%d\t%.1f\t%d\n", s, t, m, 100*m/t, q}'
+done < $POPMAP >> $OUT/mapping_summary.tsv
+
+sort -t$'\t' -k4,4n $OUT/mapping_summary.tsv | column -t | head -15
+```
+
+## Step 5: Build loci and call genotypes with `gstacks`
+
+In reference mode, `gstacks` reads the BAM files, groups aligned reads into RAD loci by position, and calls SNPs and genotypes with the same model as in the de novo demo.
+
+-   `-I`: folder with `<sample>.bam` files
+-   `-M`: population map (only samples listed here are used)
+-   `-O`: output folder
+-   `--min-mapq 20`: ignore reads with mapping quality below 20 (stricter than the default 10; eelgrass has a lot of repeats)
+
+The `.distribs` file has per-sample coverage. Plants with low effective coverage (say, under 5–10×) will have unreliable genotypes.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+mkdir -p $OUT/gstacks
+
+$STACKS/gstacks \
+  -I $OUT/bam \
+  -M $POPMAP \
+  -O $OUT/gstacks \
+  --min-mapq 20 \
+  -t $THREADS
+
+tail -8 $OUT/gstacks/gstacks.log
+$STACKS/scripts/stacks-dist-extract $OUT/gstacks/gstacks.log.distribs effective_coverages_per_sample
+```
+
+## Step 6: Filter and summarize with `populations`
+
+Starting filters (**TODO:** tune once you see how many loci survive):
+
+-   `-p 4`: keep a locus only if it is present in all 4 populations
+-   `-r 0.75`: in each population, the locus must be genotyped in ≥ 75% of plants
+-   `--min-maf 0.05`: drop rare alleles (often errors)
+-   `--max-obs-het 0.7`: drop loci where most plants look heterozygous, a sign that two paralogous loci were collapsed into one
+-   `--write-single-snp`: one SNP per locus, so SNPs are close to independent (assumed by PCA, STRUCTURE, etc.)
+-   `--fstats`: pairwise F~ST~ between all population pairs
+-   `--vcf --plink --genepop --structure`: export formats
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+mkdir -p $OUT/populations
+
+$STACKS/populations \
+  -P $OUT/gstacks \
+  -O $OUT/populations \
+  -M $POPMAP \
+  -p 4 -r 0.75 \
+  --min-maf 0.05 \
+  --max-obs-het 0.7 \
+  --write-single-snp \
+  --fstats \
+  --vcf --plink --genepop --structure \
+  -t $THREADS
+
+grep -A3 "^Removed" $OUT/populations/populations.log | head
+grep -v "^# All positions" $OUT/populations/populations.sumstats_summary.tsv | head -6
+cat $OUT/populations/populations.fst_summary.tsv
+```
+
+## Step 7: Missing data and PCA (R)
+
+This reads the `populations` VCF, converts genotypes to 0/1/2 (number of alternate alleles), reports how much data each plant is missing, and runs a PCA. Missing genotypes are filled with the SNP's mean so `prcomp` can run; plants with lots of missing data get pulled toward the center of the plot, so check the missingness table before interpreting outliers.
+
+```{r}
+library(vcfR)
+library(dplyr)
+library(readr)
+library(ggplot2)
+
+out <- "../output/05-eelgrass-stacks"
+
+vcf    <- read.vcfR(file.path(out, "populations/populations.snps.vcf"), verbose = FALSE)
+popmap <- read_tsv(file.path(out, "popmap.tsv"), col_names = c("sample", "pop"),
+                   show_col_types = FALSE)
+
+gt <- extract.gt(vcf, element = "GT")            # SNPs x samples
+dosage <- matrix(NA_real_, nrow(gt), ncol(gt), dimnames = dimnames(gt))
+dosage[gt %in% c("0/0", "0|0")] <- 0
+dosage[gt %in% c("0/1", "1/0", "0|1", "1|0")] <- 1
+dosage[gt %in% c("1/1", "1|1")] <- 2
+dosage <- t(dosage)                               # samples x SNPs
+cat("Samples:", nrow(dosage), " SNPs:", ncol(dosage), "\n")
+
+# Per-sample missingness
+miss <- tibble(sample = rownames(dosage),
+               missing = rowMeans(is.na(dosage))) |>
+  left_join(popmap, by = "sample") |>
+  arrange(desc(missing))
+print(miss, n = 15)
+write_tsv(miss, file.path(out, "missing_per_sample.tsv"))
+
+# Mean-impute, drop invariant SNPs, PCA
+dosage_imp <- apply(dosage, 2, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); x })
+dosage_imp <- dosage_imp[, apply(dosage_imp, 2, var) > 0]
+pca <- prcomp(dosage_imp, center = TRUE, scale. = FALSE)
+pve <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
+
+scores <- as_tibble(pca$x[, 1:4], rownames = "sample") |>
+  left_join(popmap, by = "sample")
+write_tsv(scores, file.path(out, "pca_scores.tsv"))
+
+p <- ggplot(scores, aes(PC1, PC2, colour = pop)) +
+  geom_point(size = 3, alpha = 0.8) +
+  labs(x = paste0("PC1 (", pve[1], "%)"), y = paste0("PC2 (", pve[2], "%)"),
+       colour = "Population",
+       title = "Eelgrass RAD-seq PCA (Stacks, reference-based)") +
+  theme_minimal()
+p
+ggsave(file.path(out, "pca_PC1_PC2.png"), p, width = 6, height = 5, dpi = 300)
+```
+
+## Things to check before trusting the PCA
+
+-   **Clones.** Eelgrass spreads clonally, so two shoots from one meadow can be the same genet. Look for pairs of plants with nearly identical genotypes (e.g. `dist(dosage_imp)` near 0, or `vcftools --relatedness2`), keep one per clone, and rerun `populations` with a trimmed popmap.
+-   **Bad samples.** Drop plants with very few reads, low mapping, low `gstacks` coverage, or \> \~50% missing genotypes, then rerun Steps 5–7.
+-   **Filter sensitivity.** Rerun `populations` with `-r 0.5` / `-r 0.9` and confirm the PCA pattern does not change much.
+-   **Ploidy/paralogs.** If many loci are filtered by `--max-obs-het`, look at the distribution of observed heterozygosity; collapsed paralogs are common in plant genomes.
+
+## Alternative: de novo Stacks (no genome)
+
+To compare with the reference-based result (or if alignment rates are poor), the reads can go through the same de novo steps as `04-stacks-demo.qmd`. Two differences with real, already-demultiplexed reads:
+
+1.  Use `process_radtags` in **directory mode with no barcodes** (`-p` input folder, no `-b`) to check the cut site and **truncate every read to the same length** (`-t`), which `ustacks` requires. Do this on the raw reads, not the `fastp` output, so the cut site is still there. **TODO:** set `-e` to the enzyme found above. Note that `process_radtags` names its outputs after the input files (`NA0106.1.fq.gz`), so rename them to `NA0106.fq.gz` to match the popmap.
+2.  Then run `ustacks` → `cstacks` → `sstacks` → `tsv2bam` → `gstacks -P` → `populations -P` exactly as in the demo, using this project's `$POPMAP`. Tune `-M`/`-n` (try 1–8) with the r80 method.
+
+```{bash}
+source ../output/05-eelgrass-stacks/eelgrass.env
+mkdir -p $OUT/denovo/clean $OUT/denovo/stacks
+
+ENZYME=sbfI   # TODO: set from the cut-site table above
+
+$STACKS/process_radtags \
+  -p $RAW/fastq_reads \
+  -i fastq \
+  -o $OUT/denovo/clean \
+  -e $ENZYME \
+  -r -c -q \
+  -t 120
+
+# Rename NA0106.1.fq.gz -> NA0106.fq.gz so names match the popmap
+for f in $OUT/denovo/clean/*.1.fq.gz; do mv "$f" "${f%.1.fq.gz}.fq.gz"; done
+
+id=1
+while IFS=$'\t' read -r s pop; do
+  $STACKS/ustacks -f $OUT/denovo/clean/${s}.fq.gz -o $OUT/denovo/stacks \
+    -i $id --name $s -m 3 -M 2 -t $THREADS
+  id=$((id + 1))
+done < $POPMAP
+
+$STACKS/cstacks -P $OUT/denovo/stacks -M $POPMAP -n 2 -t $THREADS
+$STACKS/sstacks -P $OUT/denovo/stacks -M $POPMAP -t $THREADS
+$STACKS/tsv2bam -P $OUT/denovo/stacks -M $POPMAP -t $THREADS
+$STACKS/gstacks -P $OUT/denovo/stacks -M $POPMAP -t $THREADS
+
+mkdir -p $OUT/denovo/populations
+$STACKS/populations -P $OUT/denovo/stacks -O $OUT/denovo/populations -M $POPMAP \
+  -p 4 -r 0.75 --min-maf 0.05 --max-obs-het 0.7 --write-single-snp \
+  --fstats --vcf -t $THREADS
+```
